@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+# 存档=运行时数据,永不进版本库
+nursery/saves/
+saves/
+*.db
+*.db-wal
+*.db-shm
+.env

@@ -1,0 +1,23 @@
+[project]
+name = "llm-nursery"
+version = "0.1.0"
+description = "育儿模拟器:把一个小语言模型当孩子养——喂语料、夜奶、偷学、叛逆期、五种结局。零 API 成本,纯标准库。"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]          # server.py(MCP 接入)才需要
+dotenv = ["python-dotenv"]  # driver --tick 自动加载 .env 才需要
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["nursery"]
