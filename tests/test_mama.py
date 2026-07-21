@@ -102,7 +102,7 @@ def test_mama_action_idempotent_replay(born):
 
 # ── 说给他听(真进语料) ──
 
-def test_mama_say_feeds_corpus_as_wanwan(born):
+def test_mama_say_feeds_corpus_as_mama(born):
     text = "小孩子,妈妈今天想你了,乖乖长大呀。"
     out = _mama(["say", text], T0 + 1000)
     assert out["ok"] is True and out["action"] == "say" and out["duplicate"] is False

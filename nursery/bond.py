@@ -25,9 +25,15 @@ _TREND_CN = {"rising": "在上升", "falling": "在下降", "flat": "平稳"}
 
 
 def _caregiver_of(actor: str, kind: str) -> str | None:
+    """actor → 关系账槽位。v1 是两槽模型(主照护人+妈妈通道):
+    mama 通道记 mama 账;**任何其他非 system 照护人**(含 NURSERY_PLAYERS
+    自定义 persona)都记主账 papa——自定义人格不失账,neglect 也不是只扣不涨。
+    多照护人各立账=后续版本。"""
     if kind == "neglect":
-        return "papa"   # 夜哭忽视账只认爸爸(她拍)
-    return cfg.BOND_ACTOR_TO_CG.get(actor)
+        return "papa"   # 夜哭忽视账只认主照护人(设计定案)
+    if actor == "system":
+        return None
+    return cfg.BOND_ACTOR_TO_CG.get(actor, "papa")
 
 
 def _ensure_rows_locked(conn, child_id: str, t: float) -> None:

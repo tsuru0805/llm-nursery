@@ -292,7 +292,7 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
                          " / ".join(f"「{r['text']}」" for r in mama))
         # 消化过载提示
         s_now = child_mod.read_state(conn, cid, now=t, persist=False)
-        if t >= cfg.RULES_V2_SINCE and \
+        if t >= child_mod._rules_v2_since(conn, cid) and \
                 s_now.get("digest_load", 0.0) >= cfg.DIGEST_OVERLOAD_AT:
             lines.append(texts.STATUS_OVERLOAD_LINE)
         return "\n".join(lines)

@@ -297,12 +297,28 @@ def _action_effects(kind: str) -> dict:
     return ACTION_EFFECTS.get(kind) or MAMA_ACTION_EFFECTS.get(kind) or {}
 
 
+def _rules_v2_since(conn: sqlite3.Connection, child_id: str) -> float:
+    """v2 取舍规则对该孩子的生效时刻=max(全局配置, 老档升级 stamp)。
+    新档无 stamp=纯看配置(默认 0=全程生效);老档升级当日,升级前的动作
+    不进递减计数、不触发消化/情境化——「不追溯」是真承诺。"""
+    row = conn.execute(
+        "SELECT value FROM parenting_meta WHERE child_id=? AND key='rules_v2_since'",
+        (child_id,)).fetchone()
+    stamp = 0.0
+    if row is not None:
+        try:
+            stamp = float(row["value"])
+        except (TypeError, ValueError):
+            stamp = 0.0
+    return max(cfg.RULES_V2_SINCE, stamp)
+
+
 def _daily_repeat_count(conn: sqlite3.Connection, child_id: str, kind: str,
                         t: float) -> int:
     """当日(本地零点起,且不早于 RULES_V2_SINCE)已落账的同类动作次数。
     幂等重放在上层早退不进这里,不会虚增;当前动作尚未插入,<=t 不含自己,
     同秒已提交的动作也计入。"""
-    day0 = max(_local_midnight(t), cfg.RULES_V2_SINCE)
+    day0 = max(_local_midnight(t), _rules_v2_since(conn, child_id))
     return conn.execute(
         "SELECT COUNT(*) FROM action_log WHERE child_id=? AND kind=?"
         " AND effective_at>=? AND effective_at<=?",
@@ -334,7 +350,7 @@ def _apply_action_locked(conn: sqlite3.Connection, child_id: str, actor: str, ki
     night_open = night_date is not None
     # ── 养成取舍 v2 情境(切换时刻前=全额老规则,不追溯)──
     factor, calm = 1.0, False
-    if t >= cfg.RULES_V2_SINCE:
+    if t >= _rules_v2_since(conn, child_id):
         if kind in cfg.DAILY_DECAY_KINDS and not (
                 night_open and kind in cfg.PSYCHE_NIGHT_RESPONSE_KINDS):
             # 当日同类收益递减;夜哭窗口内的响应动作永远全额(夜奶体验不动)
@@ -574,10 +590,11 @@ def feed_corpus(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, text
             nutrition_delta = min(12.0, len(clean) / 25.0 + fresh * 0.4)
 
             # ── 消化负荷:照护者语料进账;过载=吸收打折(语料照样入库,学得浅)──
-            digestible = t >= cfg.RULES_V2_SINCE and \
+            v2_since = _rules_v2_since(conn, child_id)
+            digestible = t >= v2_since and \
                 source_kind in cfg.DIGEST_SOURCE_KINDS
             st_now = _read_state_locked(conn, child_id, t, persist=False)
-            overloaded = t >= cfg.RULES_V2_SINCE and \
+            overloaded = t >= v2_since and \
                 st_now.get("digest_load", 0.0) >= cfg.DIGEST_OVERLOAD_AT
             eff_weight = training_weight * \
                 (cfg.DIGEST_ABSORB_FACTOR if overloaded else 1.0)
@@ -650,7 +667,7 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
                 refuse_p = (st_now.get("darkness", 0.0) / 100.0) * ATTITUDE_REFUSE_MAX_P
             # 消化过载 → 出口碎化比例(超过阈值的部分线性到 1)
             overload = 0.0
-            if t >= cfg.RULES_V2_SINCE:
+            if t >= _rules_v2_since(conn, child_id):
                 d = st_now.get("digest_load", 0.0)
                 if d > cfg.DIGEST_OVERLOAD_AT:
                     overload = min(1.0, (d - cfg.DIGEST_OVERLOAD_AT) /

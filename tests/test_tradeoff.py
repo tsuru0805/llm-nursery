@@ -380,6 +380,51 @@ def test_rules_v2_default_always_on():
     assert _ORIG_SINCE == 0.0
 
 
+# ── 老档升级 cutoff:升级前动作不追溯(评审回归)──
+
+def test_old_save_upgrade_not_retroactive(tmp_path, monkeypatch):
+    """v5 老档带同日动作 → 迁移钉 stamp → 升级后首个动作全额(不吃升级前计数)。"""
+    import re
+    import sqlite3 as _sq
+    monkeypatch.setattr(cfg, "RULES_V2_SINCE", 0.0)
+    p = str(tmp_path / "old.db")
+    v5 = pdb._SCHEMA.split("CREATE TABLE IF NOT EXISTS chunk_index")[0]
+    v5 = re.sub(r"^\s*digest_load REAL.*\n", "", v5, flags=re.M)
+    v5 = re.sub(r"^\s*scene\s+TEXT,.*\n", "", v5, flags=re.M)
+    raw = _sq.connect(p)
+    raw.executescript(v5)
+    now = time.time()
+    raw.execute("INSERT INTO child(child_id, caregiver_id, name, status, born_at,"
+                " total_paused_seconds, stage_policy_version, rng_seed,"
+                " state_version, created_at, updated_at)"
+                " VALUES('c1','papa','囡','active',?,0,1,1,0,?,?)",
+                (now - 3600, now - 3600, now - 3600))
+    raw.execute("INSERT INTO child_state(child_id, mood, health, intimacy,"
+                " nutrition, fatigue, last_settled_at, updated_at)"
+                " VALUES('c1',60,80,20,50,20,?,?)", (now - 3600, now - 3600))
+    for i in range(3):   # 升级前同日已玩过三次
+        raw.execute("INSERT INTO action_log(child_id, actor, kind, payload_json,"
+                    " effective_at, created_at, idempotency_key,"
+                    " state_version_before, state_version_after)"
+                    " VALUES('c1','papa','play','{}',?,?,?,0,0)",
+                    (now - 1800 + i, now - 1800 + i, f"old{i}"))
+    raw.execute("PRAGMA user_version=5")
+    raw.commit()
+    raw.close()
+    c = pdb.connect(p)   # 迁移:钉 rules_v2_since stamp
+    stamp = c.execute("SELECT value FROM parenting_meta WHERE child_id='c1'"
+                      " AND key='rules_v2_since'").fetchone()
+    assert stamp is not None and float(stamp[0]) >= now
+    child_mod.apply_action(c, "c1", "papa", "play", idempotency_key="new1",
+                           now=now + 60)
+    rec = json.loads(c.execute(
+        "SELECT payload_json FROM action_log WHERE child_id='c1'"
+        " AND idempotency_key='new1'").fetchone()[0])
+    assert "decay_factor" not in rec   # 升级前三次不计,升级后首次=全额
+    assert rec["effects"]["mood"] == pytest.approx(cfg.ACTION_EFFECTS["play"]["mood"])
+    c.close()
+
+
 # ── 模型小数权重 ──
 
 def test_model_fractional_weight_roundtrip():

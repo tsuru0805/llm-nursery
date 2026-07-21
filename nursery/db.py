@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 SCHEMA_VERSION = 8   # v2: outbox.expires_at;v3: darkness 等;v4: appearance;v5: psyche 三表;v6: digest_load;v7: scene+chunk_index+parenting_meta;v8: caregiver_bond 两表
 
@@ -290,6 +291,16 @@ def connect(db_path: str) -> sqlite3.Connection:
             if ver < 8:
                 for ddl in _BOND_DDL:
                     conn.execute(ddl)
+            if ver < 6:
+                # v2 取舍机制(消化/递减/情境化)引入:老档按孩子钉生效时刻,
+                # 升级前的动作/语料不进新规则(child._rules_v2_since 取
+                # max(config.RULES_V2_SINCE, 本 stamp))。表在 v7 建,故放段尾。
+                t0 = time.time()
+                for r in conn.execute("SELECT child_id FROM child").fetchall():
+                    conn.execute(
+                        "INSERT OR IGNORE INTO parenting_meta(child_id, key,"
+                        " value, updated_at) VALUES(?,?,?,?)",
+                        (r["child_id"], "rules_v2_since", repr(t0), t0))
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.commit()
         except BaseException:

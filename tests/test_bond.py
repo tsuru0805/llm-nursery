@@ -234,6 +234,16 @@ def test_unknown_actor_zero_write(conn, born):
         not _log(conn, born)
 
 
+def test_custom_persona_accrues_to_papa(conn, born):
+    """NURSERY_PLAYERS 自定义 persona:关系账记主账 papa,不失账(评审回归)。"""
+    child_mod.apply_action(conn, born, "grandma", "play", idempotency_key="cp1",
+                           now=T0 + 60)
+    b = bond_mod.read_bond(conn, born)
+    assert b["papa"]["attachment"] > cfg.BOND_BASELINE["attachment"]
+    rows = _log(conn, born, reason="play")
+    assert {r["caregiver"] for r in rows} == {"papa"}
+
+
 def test_db_v7_migrates_to_v8(tmp_path):
     import sqlite3 as _sq
     p = str(tmp_path / "v7.db")
