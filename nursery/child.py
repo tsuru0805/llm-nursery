@@ -370,7 +370,8 @@ def _apply_action_locked(conn: sqlite3.Connection, child_id: str, actor: str, ki
     # 心理程序层:确定性规则表落三轴账(同事务;重放动作在上面早退=同幂等,不双记)
     psy = apply_rules_locked(conn, child_id, kind, t, source_key=idempotency_key,
                              scale=factor, calm=calm)
-    # 对"这个人"的关系账(同事务同幂等;actor 不在照护人表=零写入)
+    # 对"这个人"的关系账(同事务同幂等;system 非 neglect=零写入,
+    # 其余照护人按两槽模型归账——见 bond._caregiver_of)
     bnd = _bond_apply_locked(conn, child_id, actor, kind, t,
                              source_key=idempotency_key, scale=factor,
                              night_date=night_date, calm=calm)
