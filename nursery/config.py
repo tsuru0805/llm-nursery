@@ -66,6 +66,9 @@ ACTION_EFFECTS = {
     "talk":   dict(intimacy=+2.0, mood=+2.0),                  # 谈心/闲聊
     "teach":  dict(mood=+1.0, fatigue=+4.0),                   # 教东西
     "discipline": dict(mood=-6.0, fatigue=+2.0),               # 管教(黑暗值另算)
+    # 偷学(system 被动听墙角):只算吃到语料(营养口径与 feed 同),**零亲密零心情**
+    # ——不冒充照护人的陪伴;也不在夜哭响应集/递减集/PSYCHE_RULES/BOND_RULES 里
+    "overhear": dict(nutrition=+18.0),
 }
 
 # ── 妈妈通道(第二照护人的互动;actor='mama' 记 action_log)──

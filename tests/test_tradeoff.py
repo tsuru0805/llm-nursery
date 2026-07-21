@@ -567,3 +567,19 @@ def test_driver_overload_hint(tmp_path, monkeypatch):
     assert texts.FEED_OVERLOAD_HINT in r2
     st = driver.run("papa", ["status"], now=T0 + 180)
     assert texts.STATUS_OVERLOAD_LINE in st
+
+
+def test_overhear_zero_intimacy(conn, born):
+    """偷学记账=overhear:零亲密零心情,不在夜响应集(评审回归)。"""
+    cid, brain = born
+    child_mod.feed_corpus(conn, brain, cid, "偷听来的话不算陪伴",
+                          source_kind="archive", source_ref="w:1", speaker="偷听",
+                          actor="system", action_kind="overhear",
+                          idempotency_key="ov1", now=T0 + 100)
+    rec = conn.execute(
+        "SELECT payload_json FROM action_log WHERE child_id=? AND kind='overhear'",
+        (cid,)).fetchone()
+    eff = json.loads(rec[0])["effects"]
+    assert "intimacy" not in eff and "mood" not in eff
+    assert "overhear" not in cfg.PSYCHE_NIGHT_RESPONSE_KINDS
+    assert "overhear" not in cfg.DAILY_DECAY_KINDS

@@ -196,6 +196,7 @@ def steal_corpus(conn, brain: child_mod.ChildBrain, child_id: str, viewer: str,
             r = child_mod.feed_corpus(conn, brain, child_id, f["text"],
                                       source_kind="archive", source_ref=f["ref"],
                                       speaker="偷听", actor="system",
+                                      action_kind="overhear",   # 不蹭 feed 的亲密/响应账
                                       idempotency_key=f"steal:{f['ref']}", now=t)
             if not r.get("duplicate") and r.get("fed"):
                 stolen += 1

@@ -42,7 +42,7 @@ _KIND_CN = {
     "teach": "教了他东西", "discipline": "管教了他", "homecoming": "把他找回了家",
     "neglect": "他一整晚哭了,没有人来", "runaway": "他离家出走了",
     "mama_hug": "抱了抱他", "mama_soothe": "哄了他", "mama_touch": "摸了摸他",
-    "mama_say": "跟他说了话",
+    "mama_say": "跟他说了话", "overhear": "他偷听到了大人说话",
 }
 
 
