@@ -270,11 +270,28 @@ def tick_one(db_path: str, viewer: str, now: float | None = None) -> dict:
                 scheduled = schedule_night_feed(conn, cid, now=t)
                 fired = fire_due_events(conn, brain, cid, now=t)
                 stolen = steal_corpus(conn, brain, cid, viewer, now=t)
+                # 睡眠整理:每日 07:00 后首拍重建词块索引;部署后首拍引导;
+                # 任何故障=None 照旧(词块是派生数据,坏了下拍重来)
+                try:
+                    from .chunks import consolidate_daily
+                    chunks_n = consolidate_daily(conn, cid, now=t)
+                except Exception:
+                    chunks_n = None
+                # 观察日志:晚间从真实统计派生旁观行;故障=空照旧
+                try:
+                    from .observer import daily_observe
+                    observed = daily_observe(conn, cid, now=t)
+                except Exception:
+                    observed = []
                 from .events import tick_events
                 evs = tick_events(conn, brain, cid, now=t)
                 posted = deliver_outbox(conn, now=t)
                 out = {"scheduled": scheduled, "fired": len(fired), "stolen": stolen,
                        "events": evs, "outbox": posted}
+                if chunks_n is not None:
+                    out["chunks"] = chunks_n
+                if observed:
+                    out["observed"] = observed
             finally:
                 conn.close()
         finally:

@@ -101,6 +101,14 @@ LOG_EMPTY = "还没有记录。"
 
 # ══════════════ 里程碑 / 事件 ══════════════
 
+MS_FIRST_NO_TITLE = "{name}第一次说了「不要」"
+MS_FIRST_NO_NOTE = "有自己的意见了。"
+MS_FIRST_NAME_TITLE = "{name}第一次说出了自己的名字"
+MS_FIRST_NAME_NOTE = "他知道那是他自己。"
+MS_FIRST_NOVEL_TITLE = "{name}说了一句谁也没教过的话"
+MS_FIRST_NOVEL_NOTE = "不是学舌——这句是他自己长出来的。"
+MS_FIRST_CHUNK_TITLE = "{name}第一次整词说话"
+MS_FIRST_CHUNK_NOTE = "不再一个字一个字往外蹦了。"
 MS_FIRST_PAPA_TITLE = "{name}第一次叫了爸爸"
 MS_FIRST_SENTENCE_TITLE = "{name}第一次说出完整的话"
 MS_QUOTE_NOTE = "「{text}」"
@@ -133,6 +141,22 @@ DAILY_EVENTS = {
         ("late", "回来得比说好的晚,进门前在门口站了一小会儿。"),
     ],
 }
+
+# ══════════════ 消化负荷 ══════════════
+
+FEED_OVERLOAD_HINT = (
+    "(他打了个小饱嗝——今天听得太多,新的话进不去多少了。"
+    "让他歇歇,睡一觉他自己会消化。)"
+)
+STATUS_OVERLOAD_LINE = "(今天听的话有点多,他消化不动了,说出来的都碎碎的。睡一觉就好。)"
+
+# ══════════════ 观察日志(每行必须有真实数据支撑) ══════════════
+
+OBS_REPEAT = "今天把「{word}」说了 {n} 遍。"
+OBS_UNFINISHED = "有一句话,他试了好几次,没说完整。"
+OBS_QUIET = "白天有 {hours} 个多小时没人理他,他自己待着,没闹。"
+OBS_NEW_CHARS = "今天悄悄记住了 {n} 个新字。"
+OBS_STALE = "他很久没说「{word}」了。"
 
 # ══════════════ 夜哭 ══════════════
 

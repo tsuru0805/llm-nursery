@@ -178,6 +178,81 @@ def check_milestones(conn, brain, child_id: str, now=None) -> list[str]:
                      utterance_id=row["id"]):
                 hit.append("first_sentence")
 
+    # ── 首次记录扩充(全部幂等,文案=texts 层)──
+    # 第一次说「不要」
+    if not _album_has(conn, child_id, "first_no"):
+        row = conn.execute(
+            "SELECT id, text FROM utterance WHERE child_id=? AND accepted=1"
+            " AND text LIKE '%不要%' ORDER BY id LIMIT 1", (child_id,)).fetchone()
+        if row is not None:
+            if _emit(conn, child_id, kind="nursery.milestone", item_kind="first_no",
+                     title=texts.MS_FIRST_NO_TITLE.format(name=name),
+                     note=texts.MS_QUOTE_NOTE.format(text=row["text"]) +
+                     texts.MS_FIRST_NO_NOTE,
+                     payload={"utterance": row["text"]},
+                     idem=f"ms:first_no:{child_id}", t=t, utterance_id=row["id"]):
+                hit.append("first_no")
+
+    # 第一次说自己的名字(有名才查;instr=字面子串,名字含 %/_ 不作通配)
+    if child["name"] and not _album_has(conn, child_id, "first_own_name"):
+        row = conn.execute(
+            "SELECT id, text FROM utterance WHERE child_id=? AND accepted=1"
+            " AND stage!='infant' AND instr(text, ?)>0 ORDER BY id LIMIT 1",
+            (child_id, child["name"])).fetchone()
+        if row is not None:
+            if _emit(conn, child_id, kind="nursery.milestone",
+                     item_kind="first_own_name",
+                     title=texts.MS_FIRST_NAME_TITLE.format(name=name),
+                     note=texts.MS_QUOTE_NOTE.format(text=row["text"]) +
+                     texts.MS_FIRST_NAME_NOTE,
+                     payload={"utterance": row["text"]},
+                     idem=f"ms:first_own_name:{child_id}", t=t,
+                     utterance_id=row["id"]):
+                hit.append("first_own_name")
+
+    # 第一次涌现句(足够长且与全部语料重合极低=没人教过的组合;挡婴儿乱语)
+    if not _album_has(conn, child_id, "first_novel"):
+        row = conn.execute(
+            "SELECT id, text FROM utterance WHERE child_id=? AND accepted=1"
+            " AND stage!='infant' AND LENGTH(text)>=6 AND max_source_overlap<=3"
+            " ORDER BY id LIMIT 1", (child_id,)).fetchone()
+        if row is not None:
+            if _emit(conn, child_id, kind="nursery.milestone",
+                     item_kind="first_novel",
+                     title=texts.MS_FIRST_NOVEL_TITLE.format(name=name),
+                     note=texts.MS_QUOTE_NOTE.format(text=row["text"]) +
+                     texts.MS_FIRST_NOVEL_NOTE,
+                     payload={"utterance": row["text"]},
+                     idem=f"ms:first_novel:{child_id}", t=t,
+                     utterance_id=row["id"]):
+                hit.append("first_novel")
+
+    # 第一次整词说话(词块起头的首句)。LIKE 只做预筛,真判定=解析 JSON 的
+    # chunk 键非空(裸 LIKE 会被值里出现的 'chunk' 字样误触发)
+    if not _album_has(conn, child_id, "first_chunk"):
+        row = None
+        for cand in conn.execute(
+                "SELECT id, text, generation_params_json FROM utterance"
+                " WHERE child_id=? AND accepted=1"
+                " AND generation_params_json LIKE '%\"chunk\"%' ORDER BY id",
+                (child_id,)):
+            try:
+                if json.loads(cand["generation_params_json"] or "{}").get("chunk"):
+                    row = cand
+                    break
+            except ValueError:
+                continue
+        if row is not None:
+            if _emit(conn, child_id, kind="nursery.milestone",
+                     item_kind="first_chunk",
+                     title=texts.MS_FIRST_CHUNK_TITLE.format(name=name),
+                     note=texts.MS_QUOTE_NOTE.format(text=row["text"]) +
+                     texts.MS_FIRST_CHUNK_NOTE,
+                     payload={"utterance": row["text"]},
+                     idem=f"ms:first_chunk:{child_id}", t=t,
+                     utterance_id=row["id"]):
+                hit.append("first_chunk")
+
     # 词汇量步进(每 +MILESTONE_NEW_CHARS_STEP 新字一次)
     vocab = len(brain.model.vocab_by_freq())
     step = vocab // MILESTONE_NEW_CHARS_STEP
@@ -328,27 +403,40 @@ def maybe_surprise(conn, brain, child_id: str, rng: random.Random, now=None) -> 
 
 # ────────────────────────── 夜哭忽视(黑暗值) ──────────────────────────
 
+def closed_cry_nights(conn, child_id: str, t: float) -> list[dict]:
+    """已完结(expires_at<=t)的 fired **主哭夜**逐夜账(单一权威口径):
+    date/due_at/expires_at/responded(窗内 feed/soothe/diaper)。
+    消费方=check_neglect(忽视账)+portrait(画像)。judge_ending 的按夜响应率
+    自带兜底窗口逻辑,判定时刻所有夜早已完结,结果等价。
+    只算真 fired 的夜:调度停摆导致 expired(孩子压根没哭出来)不怪照护人。"""
+    out = []
+    for ev in conn.execute(
+            "SELECT due_at, expires_at, payload_json FROM scheduled_event"
+            " WHERE child_id=? AND kind='night_cry' AND chain_id IS NULL"
+            " AND status='fired' AND expires_at IS NOT NULL AND expires_at<=?"
+            " ORDER BY due_at", (child_id, t)):
+        responded = conn.execute(
+            "SELECT 1 FROM action_log WHERE child_id=? AND effective_at BETWEEN ?"
+            " AND ? AND kind IN ('feed','soothe','diaper') LIMIT 1",
+            (child_id, ev["due_at"], ev["expires_at"])).fetchone() is not None
+        out.append({"date": json.loads(ev["payload_json"] or "{}").get("date", ""),
+                    "due_at": ev["due_at"], "expires_at": ev["expires_at"],
+                    "responded": responded})
+    return out
+
+
 def check_neglect(conn, child_id: str, now=None) -> int:
     """一整晚夜哭零回应 → darkness+。
-    对每个已过期的主哭夜检查一次,幂等键 neglect:{date}(apply_action 自带去重)。"""
+    对每个已完结的主哭夜检查一次,幂等键 neglect:{date}(apply_action 自带去重);
+    逐夜口径=closed_cry_nights(与画像同源)。"""
     from .config import DARKNESS_NEGLECT_NIGHT
     t = _now(now)
     hit = 0
-    rows = conn.execute(
-        "SELECT due_at, expires_at, payload_json FROM scheduled_event"
-        " WHERE child_id=? AND kind='night_cry' AND chain_id IS NULL"
-        " AND status='fired' AND expires_at IS NOT NULL"
-        " AND expires_at<=?", (child_id, t)).fetchall()
-    # 只算真 fired 的夜:调度停摆导致 expired(孩子压根没哭出来)不怪照护人
-    for ev in rows:
-        date = json.loads(ev["payload_json"] or "{}").get("date", "")
+    for ev in closed_cry_nights(conn, child_id, t):
+        date = ev["date"]
         if not date:
             continue
-        responded = conn.execute(
-            "SELECT 1 FROM action_log WHERE child_id=? AND effective_at BETWEEN ? AND ?"
-            " AND kind IN ('feed','soothe','diaper') LIMIT 1",
-            (child_id, ev["due_at"], ev["expires_at"])).fetchone()
-        if responded is not None:
+        if ev["responded"]:
             continue
         already = conn.execute(
             "SELECT 1 FROM action_log WHERE child_id=? AND idempotency_key=?",

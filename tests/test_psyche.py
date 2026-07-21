@@ -83,13 +83,17 @@ def test_db_fresh_has_psyche_tables(conn):
     tables = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"psyche_axis", "psyche_axis_log", "psyche_decision"} <= tables
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == pdb.SCHEMA_VERSION == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == pdb.SCHEMA_VERSION
 
 
 def test_db_v4_migrates_to_v5(tmp_path):
     """v4 旧库(无 psyche 三表)连接即迁移;重连幂等。"""
     p = str(tmp_path / "v4.db")
-    base = pdb._SCHEMA.split("CREATE TABLE IF NOT EXISTS psyche_axis")[0]
+    import re
+    base = pdb._SCHEMA.split("CREATE TABLE IF NOT EXISTS chunk_index")[0]
+    base = base.split("CREATE TABLE IF NOT EXISTS psyche_axis")[0]
+    base = re.sub(r"^\s*digest_load REAL.*\n", "", base, flags=re.M)
+    base = re.sub(r"^\s*scene\s+TEXT,.*\n", "", base, flags=re.M)
     assert "psyche" not in base, "v4 造库不应含 psyche 表"
     raw = sqlite3.connect(p)
     raw.executescript(base)
@@ -99,7 +103,7 @@ def test_db_v4_migrates_to_v5(tmp_path):
     c = pdb.connect(p)   # 触发迁移
     tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"psyche_axis", "psyche_axis_log", "psyche_decision"} <= tables
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert c.execute("PRAGMA user_version").fetchone()[0] == pdb.SCHEMA_VERSION
     c.close()
     pdb.connect(p).close()   # 再连=幂等
 

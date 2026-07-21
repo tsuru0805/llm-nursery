@@ -57,6 +57,7 @@ def test_db_v1_migrates_to_latest(tmp_path):
     raw = _sq.connect(p)
     v1_schema = pdb._SCHEMA
     for pat in (r"^\s*expires_at REAL,.*\n", r"^\s*darkness\s+REAL.*\n",
+                r"^\s*digest_load REAL.*\n", r"^\s*scene\s+TEXT,.*\n",
                 r"^\s*celebrated_stage TEXT,.*\n", r"^\s*runaway_at\s+REAL,.*\n",
                 r"^\s*ending\s+TEXT,.*\n", r"^\s*appearance\s+TEXT,.*\n"):
         before = v1_schema

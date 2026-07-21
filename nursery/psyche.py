@@ -95,7 +95,8 @@ def read_axes(conn, child_id: str) -> dict:
 
 def _bump_locked(conn, child_id: str, deltas: dict, *, reason: str,
                  source_key: str | None, t: float) -> dict:
-    """轴增量落账(0-100 夹取+流水)。必须已在调用方事务内。"""
+    """轴增量落账(0-100 夹取+流水)。必须已在调用方事务内。
+    流水记**实际生效增量**(after-cur),顶格饱和=零增量不落行——趋势不虚报。"""
     _ensure_axes_locked(conn, child_id, t)
     applied: dict = {}
     for axis, delta in deltas.items():
@@ -105,14 +106,17 @@ def _bump_locked(conn, child_id: str, deltas: dict, *, reason: str,
             "SELECT value FROM psyche_axis WHERE child_id=? AND axis=?",
             (child_id, axis)).fetchone()["value"]
         after = max(0.0, min(100.0, cur + delta))
+        real = after - cur
+        if abs(real) < 1e-9:
+            continue
         conn.execute(
             "UPDATE psyche_axis SET value=?, updated_at=? WHERE child_id=? AND axis=?",
             (after, t, child_id, axis))
         conn.execute(
             "INSERT INTO psyche_axis_log(child_id, axis, delta, value_after, reason,"
             " source_key, created_at) VALUES(?,?,?,?,?,?,?)",
-            (child_id, axis, delta, after, reason, source_key, t))
-        applied[axis] = delta
+            (child_id, axis, real, after, reason, source_key, t))
+        applied[axis] = real
     return applied
 
 
@@ -128,24 +132,40 @@ def _open_night_cry_date(conn, child_id: str, t: float) -> str | None:
 
 
 def apply_rules_locked(conn, child_id: str, kind: str, t: float, *,
-                       source_key: str | None = None) -> dict:
+                       source_key: str | None = None, scale: float = 1.0,
+                       calm: bool = False) -> dict:
     """事件/动作 → 轴增量(确定性规则表)。**必须在调用方事务内**——
     child._apply_action_locked 调用=与动作账同事务同幂等(重放动作在落账前早退,
-    规则不会双记)。返回 {axis: delta} 供动作账 payload 留痕。"""
+    规则不会双记)。返回 {axis: delta} 供动作账 payload 留痕。
+    scale=当日同类递减系数(child 层算好传入,系统事件恒 1);
+    calm=平静时安抚(不安减免 ×CALM_SOOTHE_ANXIETY_FACTOR,另记一笔依赖账
+    reason='calm_soothe';夜哭响应加成与 calm 互斥——窗开着就不算平静)。"""
     applied: dict = {}
     deltas = cfg.PSYCHE_RULES.get(kind)
     if deltas:
-        applied.update(_bump_locked(conn, child_id, deltas,
+        d = dict(deltas)
+        if calm and "anxiety" in d:
+            d["anxiety"] *= cfg.CALM_SOOTHE_ANXIETY_FACTOR
+        if scale != 1.0:
+            d = {ax: dv * scale for ax, dv in d.items()}
+        applied.update(_bump_locked(conn, child_id, d,
                                     reason=kind, source_key=source_key, t=t))
-    # 夜哭被响应→不安-(动作规则之外的额外加成;每晚只记一次)
+    if calm:
+        for ax, dv in _bump_locked(
+                conn, child_id, {"independence": cfg.CALM_SOOTHE_INDEPENDENCE},
+                reason="calm_soothe", source_key=source_key, t=t).items():
+            applied[ax] = applied.get(ax, 0.0) + dv
+    # 夜哭被响应→不安-(动作规则之外的额外加成;每晚只记一次)。
+    # 占位=parenting_meta 独立标记,不依赖流水行——饱和零增量不落流水,
+    # 标记也必须占住,否则同夜可重复领。
     if kind in cfg.PSYCHE_NIGHT_RESPONSE_KINDS:
         date = _open_night_cry_date(conn, child_id, t)
         if date:
             sk = f"nightresp:{date}"
-            dup = conn.execute(
-                "SELECT 1 FROM psyche_axis_log WHERE child_id=? AND source_key=?"
-                " LIMIT 1", (child_id, sk)).fetchone()
-            if dup is None:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO parenting_meta(child_id, key, value,"
+                " updated_at) VALUES(?,?,'1',?)", (child_id, sk, t))
+            if cur.rowcount > 0:
                 for ax, dv in _bump_locked(
                         conn, child_id, cfg.PSYCHE_NIGHT_RESPONSE_BONUS,
                         reason="night_cry_responded", source_key=sk, t=t).items():
@@ -207,6 +227,17 @@ def build_input(conn, child_id: str, child_row, stage: str, t: float) -> tuple:
     trend_lines = [f"  - {cfg.PSYCHE_CN[a]}:{_TREND_CN[trends[a]]}"
                    for a in cfg.PSYCHE_AXES]
     trend_lines.append(f"  - 叛逆(只读参考):{_TREND_CN[dark]}")
+    # 对爸/妈分开的关系趋势(数据行进 {trend_lines} 槽位,prompt 模板零改动);
+    # digest 存结构化方向值,中文渲染行另键留痕;故障=不加行照旧。
+    bond_tr: dict = {}
+    bond_lines: list[str] = []
+    try:
+        from .bond import bond_trends as _bt, trend_lines_cn as _btl
+        bond_tr = _bt(conn, child_id, t)
+        bond_lines = _btl(conn, child_id, t)
+        trend_lines.extend(bond_lines)
+    except Exception:
+        bond_tr, bond_lines = {}, []
 
     valid_ids: set = set()
     event_lines: list[str] = []
@@ -252,8 +283,10 @@ def build_input(conn, child_id: str, child_row, stage: str, t: float) -> tuple:
     recent_lines = [f"  「{x}」" for x in recent] or ["  (还没怎么说过话)"]
 
     digest = {
-        "prompt_version": PSYCHE_PROMPT_VERSION, "stage": stage, "age_days": age_days,
+        "prompt_version": PSYCHE_PROMPT_VERSION, "input_rev": 2,   # rev2=关系趋势行
+        "stage": stage, "age_days": age_days,
         "trends": trends, "darkness_trend": dark,
+        "bond_trends": bond_tr, "bond_lines": bond_lines,
         "events": event_lines, "album": album_lines, "recent": recent,
     }
     prompt = PSYCHE_PROMPT.format(

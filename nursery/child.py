@@ -23,6 +23,8 @@ import time
 import uuid
 from contextlib import contextmanager
 
+from . import config as cfg
+from .bond import apply_locked as _bond_apply_locked   # bond 只依赖 config
 from .config import (ACTION_EFFECTS, ATTITUDE_REFUSE_MAX_P, DARKNESS_BY_ACTION,
                      DARKNESS_HEAL_PER_H, FATIGUE_DECAY_PER_H, HEALTH_DECAY_PER_H,
                      HEALTH_RECOVER_PER_H, HOMECOMING_OVERLAP, MAMA_ACTION_EFFECTS,
@@ -33,7 +35,8 @@ from . import texts
 from .decoder import SpeakResult, speak
 from .guard import OverlapGuard, scrub_pii
 from .model import VariableOrderMarkov
-from .psyche import apply_rules_locked, latest_anchor_words   # psyche 不回 import child 顶层
+from .psyche import (_local_midnight, _open_night_cry_date,   # v2 情境复用(child→psyche 单向)
+                     apply_rules_locked, latest_anchor_words)  # psyche 不回 import child 顶层
 
 
 def _now(now: float | None) -> float:
@@ -200,8 +203,19 @@ def _clamp(v: float) -> float:
     return max(0.0, min(100.0, v))
 
 
-def _settle_step(s: dict, dt: float) -> None:
-    """单步(dt≤1h)就地演化。"""
+def _digest_decay_rate(abs_t: float | None) -> float:
+    """消化速率:夜窗(本地 23:00-07:00)=睡眠整理大幅回落;abs_t=None
+    (直调 settle_state 没给起点)按白天速率兜底。"""
+    if abs_t is None:
+        return cfg.DIGEST_DECAY_PER_H
+    hour = time.localtime(abs_t).tm_hour
+    if hour >= cfg.DIGEST_NIGHT_START_H or hour < cfg.DIGEST_NIGHT_END_H:
+        return cfg.DIGEST_NIGHT_DECAY_PER_H
+    return cfg.DIGEST_DECAY_PER_H
+
+
+def _settle_step(s: dict, dt: float, abs_t: float | None = None) -> None:
+    """单步(dt≤1h)就地演化。abs_t=本步起点的绝对时刻(消化夜窗判定用)。"""
     s["fatigue"] = _clamp(s["fatigue"] - FATIGUE_DECAY_PER_H * dt)
     if s["nutrition"] < 15:
         s["health"] = _clamp(s["health"] - HEALTH_DECAY_PER_H * dt)
@@ -212,18 +226,38 @@ def _settle_step(s: dict, dt: float) -> None:
     s["mood"] = _clamp(base + (s["mood"] - base) * ((1 - MOOD_REVERT_RATE) ** dt))
     if "darkness" in s:
         s["darkness"] = _clamp(s["darkness"] - DARKNESS_HEAL_PER_H * dt)  # 缓慢自愈
+    if "digest_load" in s:
+        s["digest_load"] = _clamp(s["digest_load"] - _digest_decay_rate(abs_t) * dt)
 
 
-def settle_state(state: dict, hours: float) -> dict:
-    """纯函数:h 小时自然演化,固定 ≤1h 步长积分。分段与整段近似一致(误差<1)。"""
+def _secs_to_night_boundary(abs_t: float) -> float:
+    """到下一个夜窗边界(本地 23:00 或 07:00)的秒数(>0)。"""
+    lt = time.localtime(abs_t)
+    sec_of_day = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec + (abs_t % 1.0)
+    bounds = sorted({cfg.DIGEST_NIGHT_START_H * 3600, cfg.DIGEST_NIGHT_END_H * 3600})
+    for b in bounds:
+        if sec_of_day < b:
+            return b - sec_of_day
+    return 86400 - sec_of_day + bounds[0]
+
+
+def settle_state(state: dict, hours: float, start: float | None = None) -> dict:
+    """纯函数:h 小时自然演化,固定 ≤1h 步长积分。分段与整段近似一致(误差<1)。
+    start=结算起点的绝对时刻(消化夜窗判定):步长额外贴夜窗边界切开,
+    消化分量为分段常速率的精确积分——任意切分点整段/分段结果一致;
+    None=消化按白天速率(旧签名兼容)。"""
     h = max(0.0, min(hours, SETTLE_CAP_H))
     s = dict(state)
-    steps = max(1, math.ceil(h)) if h > 0 else 0
-    for _ in range(steps):
+    cursor = start
+    guard = 0
+    while h > 1e-9 and guard < SETTLE_CAP_H * 4:
+        guard += 1
         dt = min(1.0, h)
-        if dt <= 0:
-            break
-        _settle_step(s, dt)
+        if cursor is not None:
+            dt = min(dt, max(1e-6, _secs_to_night_boundary(cursor) / 3600.0))
+        _settle_step(s, dt, abs_t=cursor)
+        if cursor is not None:
+            cursor += dt * 3600.0
         h -= dt
     return s
 
@@ -234,16 +268,17 @@ def _read_state_locked(conn: sqlite3.Connection, child_id: str, t: float,
     if row is None:
         raise KeyError(f"child_state {child_id} 不存在(embryo 无状态)")
     state = {k: row[k] for k in ("mood", "health", "intimacy", "nutrition", "fatigue",
-                                 "darkness")}
+                                 "darkness", "digest_load")}
     hours = (t - row["last_settled_at"]) / 3600.0
-    settled = settle_state(state, hours)
+    settled = settle_state(state, hours, start=row["last_settled_at"])
     if persist and hours > 0.01:
         conn.execute(
             "UPDATE child_state SET mood=?, health=?, intimacy=?, nutrition=?,"
-            " fatigue=?, darkness=?, last_settled_at=?, updated_at=? WHERE child_id=?",
+            " fatigue=?, darkness=?, digest_load=?, last_settled_at=?, updated_at=?"
+            " WHERE child_id=?",
             (settled["mood"], settled["health"], settled["intimacy"],
              settled["nutrition"], settled["fatigue"], settled["darkness"],
-             t, t, child_id))
+             settled["digest_load"], t, t, child_id))
     return settled
 
 
@@ -260,6 +295,18 @@ def read_state(conn: sqlite3.Connection, child_id: str, now: float | None = None
 def _action_effects(kind: str) -> dict:
     """动作基础效果表:主照护人的 ACTION_EFFECTS + 妈妈通道 MAMA_ACTION_EFFECTS。"""
     return ACTION_EFFECTS.get(kind) or MAMA_ACTION_EFFECTS.get(kind) or {}
+
+
+def _daily_repeat_count(conn: sqlite3.Connection, child_id: str, kind: str,
+                        t: float) -> int:
+    """当日(本地零点起,且不早于 RULES_V2_SINCE)已落账的同类动作次数。
+    幂等重放在上层早退不进这里,不会虚增;当前动作尚未插入,<=t 不含自己,
+    同秒已提交的动作也计入。"""
+    day0 = max(_local_midnight(t), cfg.RULES_V2_SINCE)
+    return conn.execute(
+        "SELECT COUNT(*) FROM action_log WHERE child_id=? AND kind=?"
+        " AND effective_at>=? AND effective_at<=?",
+        (child_id, kind, day0, t)).fetchone()[0]
 
 
 def _apply_action_locked(conn: sqlite3.Connection, child_id: str, actor: str, kind: str,
@@ -281,6 +328,23 @@ def _apply_action_locked(conn: sqlite3.Connection, child_id: str, actor: str, ki
         dk *= 2
     if dk:
         effects["darkness"] = effects.get("darkness", 0.0) + dk
+
+    # 夜哭窗是否开着:v2 情境与关系账共用(date 给 bond 做每夜一次去重)
+    night_date = _open_night_cry_date(conn, child_id, t)
+    night_open = night_date is not None
+    # ── 养成取舍 v2 情境(切换时刻前=全额老规则,不追溯)──
+    factor, calm = 1.0, False
+    if t >= cfg.RULES_V2_SINCE:
+        if kind in cfg.DAILY_DECAY_KINDS and not (
+                night_open and kind in cfg.PSYCHE_NIGHT_RESPONSE_KINDS):
+            # 当日同类收益递减;夜哭窗口内的响应动作永远全额(夜奶体验不动)
+            n = _daily_repeat_count(conn, child_id, kind, t)
+            factor = max(cfg.DAILY_DECAY_FLOOR, cfg.DAILY_DECAY ** n)
+        if kind in cfg.CALM_SOOTHE_KINDS and not night_open and                 state["mood"] >= cfg.CALM_SOOTHE_MOOD_MIN:
+            calm = True   # 他本来就平静:心理账走依赖口径(psyche 层)
+    if factor != 1.0:
+        # 递减动作集不含营养/负荷键(feed/mama_say 走语料线,不在集内),整表同乘
+        effects = {k: v * factor for k, v in effects.items()}
     after = dict(state)
     for k, v in effects.items():
         after[k] = _clamp(after.get(k, 0.0) + v)
@@ -288,19 +352,31 @@ def _apply_action_locked(conn: sqlite3.Connection, child_id: str, actor: str, ki
     child = get_child(conn, child_id)
     ver = child["state_version"]
     # 心理程序层:确定性规则表落三轴账(同事务;重放动作在上面早退=同幂等,不双记)
-    psy = apply_rules_locked(conn, child_id, kind, t, source_key=idempotency_key)
+    psy = apply_rules_locked(conn, child_id, kind, t, source_key=idempotency_key,
+                             scale=factor, calm=calm)
+    # 对"这个人"的关系账(同事务同幂等;actor 不在照护人表=零写入)
+    bnd = _bond_apply_locked(conn, child_id, actor, kind, t,
+                             source_key=idempotency_key, scale=factor,
+                             night_date=night_date, calm=calm)
     record = {"action": kind, "effects": effects,
               "state_before": state, "state_after": after,
               "user_payload": payload or {}}
+    if factor != 1.0:
+        record["decay_factor"] = round(factor, 4)
+    if calm:
+        record["calm_soothe"] = True
+    if bnd:
+        record["bond"] = bnd
     if psy:
         record["psyche"] = psy
     conn.execute(
         "UPDATE child_state SET mood=?, health=?, intimacy=?, nutrition=?, fatigue=?,"
-        " darkness=?, last_settled_at=?, last_interaction_at=?,"
+        " darkness=?, digest_load=?, last_settled_at=?, last_interaction_at=?,"
         " last_fed_at=CASE WHEN ?='feed' THEN ? ELSE last_fed_at END,"
         " updated_at=? WHERE child_id=?",
         (after["mood"], after["health"], after["intimacy"], after["nutrition"],
-         after["fatigue"], after["darkness"], t, t, kind, t, t, child_id))
+         after["fatigue"], after["darkness"], after["digest_load"],
+         t, t, kind, t, t, child_id))
     conn.execute(
         "UPDATE child SET state_version=?, updated_at=? WHERE child_id=?",
         (ver + 1, t, child_id))
@@ -325,6 +401,23 @@ def apply_action(conn: sqlite3.Connection, child_id: str, actor: str, kind: str,
         return _apply_action_locked(conn, child_id, actor, kind,
                                     idempotency_key=idempotency_key, payload=payload,
                                     extra_effects=extra_effects, t=t)
+
+
+def _derive_scene(conn, child_id: str, source_kind: str, action_kind: str,
+                  t: float) -> str:
+    """场景标签自动派生:从动作上下文推,不用任何人手选。旧语料 NULL=legacy。"""
+    if source_kind == "archive":
+        return "overheard"
+    if source_kind in ("night_feed", "book"):
+        return "bedtime"
+    if action_kind == "teach":
+        return "teaching"
+    if _open_night_cry_date(conn, child_id, t) is not None:
+        return "comfort"
+    hour = time.localtime(t).tm_hour
+    if hour >= cfg.DIGEST_NIGHT_START_H or hour < cfg.DIGEST_NIGHT_END_H:
+        return "bedtime"
+    return "daily"
 
 
 # ────────────────────────── 大脑装载/喂语料/说话 ──────────────────────────
@@ -434,7 +527,7 @@ class ChildBrain:
 def feed_corpus(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, text: str, *,
                 source_kind: str = "direct", speaker: str | None = None,
                 source_ref: str | None = None, actor: str = "papa",
-                action_kind: str = "feed",
+                action_kind: str = "feed", scene: str | None = None,
                 idempotency_key: str | None = None, training_weight: float = 1.0,
                 snapshot: bool = True, now: float | None = None) -> dict:
     """喂语料:PII 遮盖→(锁内)catch-up→去重→入库→模型增量→快照→营养动作账,单顶层事务。
@@ -459,6 +552,7 @@ def feed_corpus(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, text
         return {"fed": 0, "duplicate": False, "pii_flags": flags}
     h = hashlib.sha256(clean.encode("utf-8")).hexdigest()
 
+    act_key = idempotency_key or f"{action_kind}:{h[:16]}"
     try:
         with tx(conn):
             brain._replay_after_cursor(conn)  # 锁内 catch-up(模型+护栏),游标不跳号
@@ -467,37 +561,58 @@ def feed_corpus(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, text
                 (child_id, h)).fetchone()
             if dup is not None:
                 return {"fed": 0, "duplicate": True, "pii_flags": flags}
+            # 动作幂等键先查:同 key 不同正文的重试若放行,语料/模型会提交而
+            # 动作账早退=两本账分叉。视为重放,整体不生效。
+            if conn.execute(
+                    "SELECT 1 FROM action_log WHERE child_id=? AND idempotency_key=?",
+                    (child_id, act_key)).fetchone() is not None:
+                return {"fed": 0, "duplicate": True, "pii_flags": flags}
 
             # 营养:多样性口径(新字比例)——刷同一句话喂不胖
             known = set(brain.model.vocab_by_freq())
             fresh = len({c for c in clean if not c.isspace()} - known)
             nutrition_delta = min(12.0, len(clean) / 25.0 + fresh * 0.4)
 
+            # ── 消化负荷:照护者语料进账;过载=吸收打折(语料照样入库,学得浅)──
+            digestible = t >= cfg.RULES_V2_SINCE and \
+                source_kind in cfg.DIGEST_SOURCE_KINDS
+            st_now = _read_state_locked(conn, child_id, t, persist=False)
+            overloaded = t >= cfg.RULES_V2_SINCE and \
+                st_now.get("digest_load", 0.0) >= cfg.DIGEST_OVERLOAD_AT
+            eff_weight = training_weight * \
+                (cfg.DIGEST_ABSORB_FACTOR if overloaded else 1.0)
+            if overloaded:
+                nutrition_delta *= cfg.DIGEST_ABSORB_FACTOR
+
+            sc = scene or _derive_scene(conn, child_id, source_kind, action_kind, t)
             cur = conn.execute(
                 "INSERT INTO corpus_item(child_id, source_kind, source_ref, speaker,"
                 " text, content_hash, tokenizer_version, char_count, privacy_flags,"
-                " training_weight, acquired_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                " training_weight, scene, acquired_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (child_id, source_kind, source_ref, speaker, clean, h,
                  TOKENIZER_VERSION, len(clean), json.dumps(flags) if flags else None,
-                 training_weight, t))
+                 eff_weight, sc, t))   # 落打折后权重:catch-up 重放与当场喂结果一致
             corpus_id = cur.lastrowid
-            brain.model.feed(clean, weight=training_weight)
+            brain.model.feed(clean, weight=eff_weight)
             brain.guard.add_source(clean)
             brain.trained_through = corpus_id
             if snapshot:
                 brain._save_snapshot_locked(conn, t)
-            _apply_action_locked(
+            extra = {"nutrition": nutrition_delta -
+                     _action_effects(action_kind).get("nutrition", 0.0)}
+            if digestible:
+                extra["digest_load"] = len(clean) * cfg.DIGEST_PER_CHAR
+            after = _apply_action_locked(
                 conn, child_id, actor, action_kind,
-                idempotency_key=idempotency_key or f"{action_kind}:{h[:16]}",
+                idempotency_key=act_key,
                 payload={"corpus_id": corpus_id, "chars": len(clean)},
-                extra_effects={"nutrition": nutrition_delta -
-                               _action_effects(action_kind).get("nutrition", 0.0)},
-                t=t)
+                extra_effects=extra, t=t)
     except BaseException:
         brain.stale = True  # 内存已可能被 feed 污染,下次使用前重载
         raise
     return {"fed": len(clean), "duplicate": False, "pii_flags": flags,
-            "corpus_id": corpus_id, "nutrition_delta": nutrition_delta}
+            "corpus_id": corpus_id, "nutrition_delta": nutrition_delta,
+            "digest_load": after.get("digest_load", 0.0), "overloaded": overloaded}
 
 
 def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
@@ -528,11 +643,18 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
             else:
                 rng.seed(child["rng_seed"])
 
+            st_now = _read_state_locked(conn, child_id, t, persist=False)
             # 态度层:teen 期黑暗值 → 已读不回概率(听懂了,但他就是不)
             refuse_p = 0.0
             if stage == "teen":
-                st_now = _read_state_locked(conn, child_id, t, persist=False)
                 refuse_p = (st_now.get("darkness", 0.0) / 100.0) * ATTITUDE_REFUSE_MAX_P
+            # 消化过载 → 出口碎化比例(超过阈值的部分线性到 1)
+            overload = 0.0
+            if t >= cfg.RULES_V2_SINCE:
+                d = st_now.get("digest_load", 0.0)
+                if d > cfg.DIGEST_OVERLOAD_AT:
+                    overload = min(1.0, (d - cfg.DIGEST_OVERLOAD_AT) /
+                                   max(1.0, 100.0 - cfg.DIGEST_OVERLOAD_AT))
 
             recent = [r["text"] for r in conn.execute(
                 "SELECT text FROM utterance WHERE child_id=? AND accepted=1"
@@ -543,9 +665,21 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
                 anchors = latest_anchor_words(conn, child_id, t)
             except Exception:
                 anchors = None
+            # 家庭词块:按阶段概率整词起头(婴儿=0);场景倾向随触发源;
+            # 索引空/任何故障=不起头照旧(fail-open)。确定性口径:同 rng_state+
+            # 同索引内容 ⇒ 同结果;p=0 不抽签不耗 rng。
+            chunk = None
+            p_seed = cfg.CHUNK_SEED_P.get(stage, 0.0)
+            if p_seed > 0 and rng.random() < p_seed:
+                from .chunks import pick_chunk
+                try:
+                    chunk = pick_chunk(conn, child_id, rng,
+                                       scene_hint=cfg.SPEAK_SCENE_HINT.get(trigger))
+                except Exception:
+                    chunk = None
             result = speak(brain.model, brain.guard, stage, rng,
                            recent_texts=recent, refuse_p=refuse_p,
-                           anchor_words=anchors)
+                           anchor_words=anchors, overload=overload, chunk=chunk)
 
             conn.execute(
                 "INSERT INTO utterance(child_id, trigger, model_snapshot_id, stage, text,"
@@ -555,7 +689,9 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
                  json.dumps(result.params, ensure_ascii=False), result.max_overlap,
                  1 if result.accepted else 0,
                  None if result.accepted else
-                 ("refused" if result.refused else "guard_exhausted"), t))
+                 ("refused" if result.refused else
+                  # 真试过(retries>0)才叫护栏耗尽;空模型零重试=no_model
+                  ("guard_exhausted" if result.retries > 0 else "no_model")), t))
             conn.execute("UPDATE child SET rng_state=?, updated_at=? WHERE child_id=?",
                          (_state_to_json(rng.getstate()), t, child_id))
     except BaseException:

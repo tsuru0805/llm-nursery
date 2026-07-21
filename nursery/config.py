@@ -84,6 +84,111 @@ MAMA_ACTION_EFFECTS = {
 # 每个动作同时也是一次陪伴:回应及时率统计口径(结局分支用)
 RESPONSE_WINDOW_MIN = 30  # 事件发出后 30 分钟内回应算"及时"
 
+# ── 养成取舍机制 v2:让「好的养育」也产生代价 ──────────────────────────
+# 设计原则:玩家再认真也不能把所有属性同时拉满;每种爱法都留下偏向。
+# 切换时刻:此前的动作/语料不进 v2 规则计算。新档默认 0=始终生效;
+# 运营中的老档想择期切换,可把它设成未来某本地时刻的 epoch 秒。
+RULES_V2_SINCE = 0.0
+
+# 消化负荷:听进去的话要消化,0-100,child_state.digest_load(schema v6)。
+# 只对照护者语料进账(direct/night_feed/book);偷学=被动听墙角,不挤占消化。
+DIGEST_SOURCE_KINDS = ("direct", "night_feed", "book")
+DIGEST_PER_CHAR = 1 / 25.0        # 每字负荷(与营养同刻度:一次 300 字 ≈ +12)
+DIGEST_DECAY_PER_H = 3.0          # 白天逐时消化
+DIGEST_NIGHT_DECAY_PER_H = 8.0    # 睡眠整理(夜窗):睡一觉基本清空
+DIGEST_NIGHT_START_H = 23         # 夜窗=23:00-07:00(本地时)
+DIGEST_NIGHT_END_H = 7
+DIGEST_OVERLOAD_AT = 70.0         # 过载阈值:超过=吃撑
+DIGEST_ABSORB_FACTOR = 0.5        # 过载时吸收率:training_weight/营养同乘(语料照样入库不丢)
+DIGEST_SPEAK_TEMP_BOOST = 0.3     # 过载出口碎化(按超出比例线性):温度升
+DIGEST_SPEAK_LEN_CUT = 0.35       # 句长缩(比例上限)
+DIGEST_SPEAK_REDUP_BOOST = 0.15   # 叠词回升(话说不利索)
+
+# 同类动作当日收益递减:当日第 n+1 次同类动作,状态与三轴效果 ×DAILY_DECAY^n
+# (下限 FLOOR)。只覆盖日常照料动作——feed/mama_say 走语料线(由消化负荷管,
+# 营养自带多样性递减);discipline/neglect/runaway/homecoming 等重事件不衰减
+# (狠事每次都全额)。**夜哭窗口内的 feed/soothe/diaper 永远全额**(夜奶体验不动);
+# 夜里的响应也计入当日次数,但豁免只看当次是否在窗内。
+DAILY_DECAY_KINDS = frozenset({
+    "soothe", "diaper", "burp", "play", "talk", "teach",
+    "mama_hug", "mama_soothe", "mama_touch",
+})
+DAILY_DECAY = 0.75
+DAILY_DECAY_FLOOR = 0.25
+
+# 情境化安抚:他本来就平静(无未过期夜哭窗且 mood≥阈值)时被哄=不安减免砍半+
+# 独立微降(依赖记账,psyche_axis_log reason='calm_soothe');真难受时全额不变。
+CALM_SOOTHE_KINDS = frozenset({"soothe", "mama_soothe", "mama_hug"})
+CALM_SOOTHE_MOOD_MIN = 55.0
+CALM_SOOTHE_ANXIETY_FACTOR = 0.5
+CALM_SOOTHE_INDEPENDENCE = -0.3
+
+# ── 家庭词块 / 场景标签 / 睡眠整理 ────────────────────────────────────
+# 家庭词块:从他真实语料里提的高频短片段("抱抱""不要走"),生成时按概率整词起头
+# ——模型本体零改动,词块只是 speak 的 seed 软通道;护栏/词汇解锁照跑。
+SCENES = ("comfort", "play", "teaching", "bedtime", "conflict", "daily", "overheard")
+CHUNK_MIN_LEN = 2                 # 词块长度下限(字)
+CHUNK_MAX_LEN = 6                 # 上限(< toddler overlap_limit 8,seed 自身不会撞护栏)
+CHUNK_MIN_COUNT = 3.0             # 加权出现次数达标才算"家里常说的"
+CHUNK_TOP_MAX = 200               # 词块索引条数上限
+CHUNK_ABSORB_RATIO = 0.8          # 长块次数 ≥ 短块×此值 ⇒ 短块被吸收(子串冗余;短块计数恒≥长块)
+CHUNK_SEED_P = {                  # 各阶段"整词起头"概率(infant=0:婴儿还不会)
+    "infant": 0.0, "toddler": 0.35, "child": 0.25, "teen": 0.15, "adult": 0.1,
+}
+CHUNK_SCENE_BOOST = 3.0           # 场景匹配的词块选中权重乘数
+CHUNK_PICK_POOL = 40              # 每次说话从索引取前 N 条参与抽选(场景加权在此池内)
+# 说话触发 → 场景倾向(在合适的地方说合适的话;无命中=全池)
+SPEAK_SCENE_HINT = {
+    "night_cry": ("comfort", "bedtime"),
+    "play": ("play",),
+    "teach": ("teaching",),
+    "soothe": ("comfort",),
+    "mama_soothe": ("comfort",), "mama_hug": ("comfort",),
+    "mama_say": ("comfort", "daily"),
+}
+# 睡眠整理:每天 07:00 后首拍重建词块索引(=夜里把白天的话变成自己的);
+# 部署后 meta 缺行=当拍立即引导重建(不等第二天)。消化负荷清账在 settle 夜窗。
+CONSOLIDATE_AFTER_H = 7
+
+# ── 双照护人关系状态 ──────────────────────────────────────────────────
+# 孩子对每位照护者的感情分开长。四维(孩子体感词,不用心理学术语):
+# 亲近(attachment 黏这个人)/安心(trust 信这个人会来)/踏实(predictability
+# 这个人给的日子是稳的)/委屈(resentment 攒下的芥蒂)。
+BOND_CAREGIVERS = ("papa", "mama")
+BOND_DIMS = ("attachment", "trust", "predictability", "resentment")
+BOND_CN = {"attachment": "亲近", "trust": "安心",
+           "predictability": "踏实", "resentment": "委屈"}
+BOND_BASELINE = dict(attachment=25.0, trust=40.0, predictability=40.0, resentment=0.0)
+BOND_ACTOR_TO_CG = {"papa": "papa", "mama": "mama"}
+BOND_RULES = {   # kind → 对该动作发起人的关系增量
+    "feed":    dict(attachment=+1.0, trust=+0.5),
+    "soothe":  dict(attachment=+1.2, trust=+0.8),
+    "diaper":  dict(trust=+0.5, predictability=+0.3),
+    "burp":    dict(attachment=+0.3),
+    "play":    dict(attachment=+1.5),
+    "talk":    dict(attachment=+0.8, trust=+0.5),
+    "teach":   dict(predictability=+0.5),
+    "discipline": dict(resentment=+2.0, attachment=-0.5),
+    "homecoming": dict(trust=+5.0, resentment=-8.0),
+    "mama_hug":    dict(attachment=+1.5, trust=+0.5),
+    "mama_soothe": dict(attachment=+1.2, trust=+0.8),
+    "mama_touch":  dict(attachment=+0.8),
+    "mama_say":    dict(attachment=+0.8, trust=+0.5),
+    # 夜哭整晚没人来:账记主照护人(夜哭账只认主照护人,actor=system 特判)
+    "neglect": dict(trust=-3.0, predictability=-2.0, resentment=+3.0),
+}
+BOND_NIGHT_RESPONSE = dict(trust=+2.0, predictability=+1.5)  # 夜哭窗内响应加成(主照护人)
+BOND_CALM_SOOTHE = dict(attachment=+0.5)   # 平静时也被哄=更黏这个人(依赖面)
+BOND_INIT_FACTOR = 0.5   # 历史估底:既往每笔动作按规则表半额折算(不装全知)
+BOND_TREND_WINDOW_H = 48
+BOND_TREND_FLAT_EPS = 1.0
+
+# ── 观察日志:晚间从真实统计派生旁观行,查不出=不发绝不编 ──────────────
+OBSERVE_AFTER_H = 21          # 本地 21:00 后的 tick 发当日观察
+OBSERVE_MAX_PER_DAY = 2       # 每天最多两行(旁观感,不刷屏)
+OBSERVE_QUIET_GAP_H = 6.0     # 白天最长无互动间隔 ≥6h = "自己待了很久"
+OBSERVE_NEW_CHARS_MIN = 5     # 今天新字 ≥5 才值一行
+
 # ── 黑暗值(叛逆量表)/态度层/离家出走 ──
 DARKNESS_BY_ACTION = {          # 动作 → 黑暗值增减(管教涨,温暖降;亲密<30 时管教翻倍)
     "discipline": +4.0,

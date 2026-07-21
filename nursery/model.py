@@ -27,10 +27,13 @@ class VariableOrderMarkov:
         self.total_chars = 0
 
     # ── 训练 ──
-    def feed(self, text: str, weight: int = 1) -> int:
-        """逐行增量训练,返回入训字符数。weight=整数重复权重(training_weight 取整)。"""
+    def feed(self, text: str, weight: float = 1.0) -> int:
+        """逐行增量训练,返回入训字符数。weight=训练权重,允许小数(消化过载时
+        吸收打折 ×0.5 必须真实作用到计数——取整到 ≥1 会把打折圆没)。下限 0.1:
+        零/负权重会造出全零分布上下文,rng.choices 全零权重直接炸。
+        Counter 加浮点合法;快照 json 往返无损;历史整数计数不受影响。"""
         fed = 0
-        w = max(1, int(round(weight)))
+        w = max(0.1, float(weight))
         for raw in text.splitlines():
             line = raw.strip()
             if not line:

@@ -31,6 +31,7 @@ import sys
 from . import child as child_mod
 from . import db as pdb
 from . import texts
+from . import config as cfg
 from .config import STAGE_CN
 from .decoder import SpeakResult
 
@@ -196,6 +197,20 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
     rest = " ".join(argv[1:]).strip()
 
     child = _active_child(conn)
+    if cmd == "portrait":
+        # 成长画像 JSON 面(围观/接入层消费):纯读零状态;照护指令白名单无此指令
+        if child is None:
+            return json.dumps({"ok": False, "error": "no_child"}, ensure_ascii=False)
+        from .portrait import build_portrait
+        try:
+            pbrain = child_mod.ChildBrain.load(conn, child["child_id"])
+        except Exception:
+            pbrain = None   # 画像照出,vocab=None+degraded 标记(不把异常当事实缺失)
+        out = {"ok": True, "portrait": build_portrait(conn, pbrain,
+                                                      child["child_id"], now=t)}
+        if pbrain is None:
+            out["degraded"] = "brain_load_failed"
+        return json.dumps(out, ensure_ascii=False)
     if cmd == "mama":
         # 妈妈通道走 JSON 面(接入层消费);主照护人指令白名单里没有它
         return _mama_dispatch(conn, child, argv[1:], t)
@@ -275,6 +290,11 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
         if mama:
             lines.append(texts.STATUS_MAMA_SAID +
                          " / ".join(f"「{r['text']}」" for r in mama))
+        # 消化过载提示
+        s_now = child_mod.read_state(conn, cid, now=t, persist=False)
+        if t >= cfg.RULES_V2_SINCE and \
+                s_now.get("digest_load", 0.0) >= cfg.DIGEST_OVERLOAD_AT:
+            lines.append(texts.STATUS_OVERLOAD_LINE)
         return "\n".join(lines)
 
     if cmd == "describe":
@@ -312,6 +332,8 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
         line = (texts.FEED_READ_RECEIPT.format(name=name) if res.refused
                 else _speak_line(res, name))
         head = texts.FEED_OK.format(fed=r["fed"], nutrition=r["nutrition_delta"])
+        if r.get("overloaded"):
+            head += "\n" + texts.FEED_OVERLOAD_HINT
         return f"{head}\n{line}\n{_render_state(conn, cid, t)}"
 
     if cmd in ("soothe", "diaper", "burp", "play", "teach", "talk", "discipline"):

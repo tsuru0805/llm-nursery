@@ -8,7 +8,8 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
-from .config import PSYCHE_ANCHOR_BOOST, STAGE_DECODE_V1
+from .config import (DIGEST_SPEAK_LEN_CUT, DIGEST_SPEAK_REDUP_BOOST,
+                     DIGEST_SPEAK_TEMP_BOOST, PSYCHE_ANCHOR_BOOST, STAGE_DECODE_V1)
 from .guard import OverlapGuard
 from .model import LINE_BOUND, VariableOrderMarkov
 from .texts import FALLBACK_BABBLE   # 护栏全拒兜底(文案层;此处 re-export)
@@ -31,12 +32,25 @@ class SpeakResult:
 def speak(model: VariableOrderMarkov, guard: OverlapGuard, stage: str,
           rng: random.Random, recent_texts: list[str] | None = None,
           seed: str = "", refuse_p: float = 0.0,
-          anchor_words: list[str] | None = None) -> SpeakResult:
+          anchor_words: list[str] | None = None,
+          overload: float = 0.0, chunk: str | None = None) -> SpeakResult:
     """seed=锚词起头继续说(语出惊人用);refuse_p=已读不回概率(teen 黑暗值驱动);
     anchor_words=psyche 决策锚词:锚词字符采样权重 ×PSYCHE_ANCHOR_BOOST 的
     **软偏置**——只影响采样偏好,护栏三层原封不动(过不了 guard 照样拒);
-    None=零偏置照旧。锚词进 params 留痕(utterance.generation_params_json 可审计)。"""
+    None=零偏置照旧。锚词进 params 留痕(utterance.generation_params_json 可审计)。
+    overload=消化过载比例 0-1:话说不利索——温度升/句长缩/叠词回升,
+    与锚词同款软通道,护栏与词汇解锁照跑;0=原行为。同样进 params 留痕。
+    chunk=家庭词块整词起头:等价 seed(显式 seed 优先,语出惊人不受扰),
+    **词块字符必须全在词汇解锁集内**,否则本次不整词(seed 直进输出,不设闸
+    =绕过 vocab_ratio);进 params 留痕。"""
     p = STAGE_DECODE_V1[stage]
+    if overload and overload > 0:
+        ov = min(1.0, max(0.0, float(overload)))
+        p = dict(p,
+                 temperature=p["temperature"] + DIGEST_SPEAK_TEMP_BOOST * ov,
+                 max_len=max(p["min_len"], int(p["max_len"] * (1 - DIGEST_SPEAK_LEN_CUT * ov))),
+                 reduplicate_p=min(0.9, p["reduplicate_p"] + DIGEST_SPEAK_REDUP_BOOST * ov),
+                 overload=round(ov, 2))
     bias = None
     if anchor_words:
         chars = {c for w in anchor_words for c in str(w) if not c.isspace()}
@@ -53,6 +67,10 @@ def speak(model: VariableOrderMarkov, guard: OverlapGuard, stage: str,
         return SpeakResult(text=FALLBACK_BABBLE, retries=0, max_overlap=0,
                            accepted=False, stage=stage, params=p)
     allowed = set(ranked[: max(8, int(len(ranked) * p["vocab_ratio"]))])
+    # 词块起头:字符全在解锁集才生效(不绕 vocab 闸);显式 seed 优先
+    if chunk and not seed and all(c in allowed for c in chunk):
+        seed = chunk
+        p = dict(p, chunk=chunk)
 
     retries = 0
     last_overlap = 0

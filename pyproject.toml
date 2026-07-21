@@ -1,6 +1,6 @@
 [project]
 name = "llm-nursery"
-version = "0.1.0"
+version = "0.2.0"
 description = "育儿模拟器:把一个小语言模型当孩子养——喂语料、夜奶、偷学、叛逆期、五种结局。零 API 成本,纯标准库。"
 readme = "README.md"
 requires-python = ">=3.10"
