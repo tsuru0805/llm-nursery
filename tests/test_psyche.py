@@ -71,7 +71,7 @@ def _ok_ds(conn, cid, calls, anchors=("果果",)):
             {"behavior": "凑近一点", "posture": "小心翼翼",
              "anchor_words": list(anchors), "evidence": [f"a{aid}"],
              "no_action": False, "reason": "有人陪着",
-             # inner=终稿(wanwan-v1)新增字段:解析器刻意不消费,整段进 raw_json 留痕
+             # inner=上游 prompt 定稿新增字段:解析器刻意不消费,整段进 raw_json 留痕
              "inner": "想再靠近一点点"}, ensure_ascii=False),
             "model": "mock-ds", "prompt_tokens": 100, "completion_tokens": 50}
     return fake
