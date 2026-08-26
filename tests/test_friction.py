@@ -308,7 +308,7 @@ def test_night_egg_pct_from_real_corpus(teen, conn, monkeypatch):
 
 
 def test_night_egg_idempotent_hit_skips_aggregate(teen, conn, monkeypatch):
-    """幂等键前置(评审阻断):当日已发后,同晚重复 tick 不再跑
+    """幂等键前置(评审定案):当日已发后,同晚重复 tick 不再跑
     生命周期级 SUM 聚合(扫描量有界)。"""
     cid, _ = teen
     monkeypatch.setattr(cfg, "NIGHT_EGG_P", 1.0)

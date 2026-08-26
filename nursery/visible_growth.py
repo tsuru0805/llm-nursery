@@ -68,7 +68,7 @@ def _notebook(conn, child_id: str, t: float) -> bool:
     raw_json/裸数值永不出现。每日至多一行(幂等 notebook:{date})。"""
     if time.localtime(t).tm_hour < cfg.OBSERVE_AFTER_H:
         return False
-    # 窗口双端夹在 SQL 里(评审阻断:只查「差值>窗」会把未来时间戳的
+    # 窗口双端夹在 SQL 里(评审定案:只查「差值>窗」会把未来时间戳的
     # 脏行当新鲜——created_at BETWEEN 才挡得住时间穿越)
     row = conn.execute(
         "SELECT anchor_words_json, input_digest_json, created_at"

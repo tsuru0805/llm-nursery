@@ -37,7 +37,7 @@ from .config import (ASK_ANSWERED_EFFECTS, ASK_HOURS, ASK_RESPONSE_KINDS,
 
 
 def derive_tattle(conn, child_id: str, target: str, t: float) -> str | None:
-    """告状/吐槽稿(/M2):内容=当日 action_log 真账(零次也是真账,
+    """告状/吐槽稿:内容=当日 action_log 真账(零次也是真账,
     「都没陪我玩」由真实零计数派生,不编)。找妈妈=告爸爸的状(凶我了>
     没陪我玩>正面汇报);找爸爸=吐槽/汇报妈妈。返回带 {voice} 槽的完整
     场景模板(他真实模型的那句仍在场);查询异常由调用方兜回普通场景稿。"""
@@ -173,7 +173,7 @@ def fire_due_asks(conn, brain: "child_mod.ChildBrain", child_id: str,
                 "target": meta.get("target", "papa"), "stage": stage,
                 # 全 str(接入层可做纯 str 硬校验);注入前过滤用
                 "window_until": str(int(ev["expires_at"])), "ts": t,
-                "source_event_id": f"parentingask:{child_id}:{ev['id']}",
+                "source_event_id": f"ask:{child_id}:{ev['id']}",
                 "_template": template,
             }
             conn.execute(

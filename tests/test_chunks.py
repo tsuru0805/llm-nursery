@@ -276,7 +276,7 @@ def test_milestone_name_wildcard_not_glob(conn):
 
 
 def test_milestone_chunk_key_not_value(conn, born):
-    """params 值里出现 'chunk' 字样不算;真 chunk 键才算(阻断3)。"""
+    """params 值里出现 'chunk' 字样不算;真 chunk 键才算(评审定案)。"""
     cid, brain = born
     _utter(conn, cid, "带干扰值的一句", params={"anchors": ["chunk"]}, t=T0 + 100)
     hit = events.check_milestones(conn, brain, cid, now=T0 + 200)

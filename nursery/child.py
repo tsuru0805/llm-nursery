@@ -362,6 +362,22 @@ def _rules_v2_since(conn: sqlite3.Connection, child_id: str) -> float:
     return max(cfg.RULES_V2_SINCE, stamp)
 
 
+def _rules_v3_since(conn: sqlite3.Connection, child_id: str) -> float:
+    """v0.3 新记账机制对该孩子的生效时刻(老档升级时由迁移钉 stamp)。
+    新档无 stamp=0(全程生效——他本来就没有升级前的历史);老档升级后,
+    升级前的语料不触发 swear 两难、升级当日已过去的时段不算「被晾」
+    ——「不翻旧账」是真承诺。消费点:choices.plan_choices / friction._quiet_annoyance。"""
+    row = conn.execute(
+        "SELECT value FROM parenting_meta WHERE child_id=? AND key='rules_v3_since'",
+        (child_id,)).fetchone()
+    if row is None:
+        return 0.0
+    try:
+        return float(row["value"])
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _daily_repeat_count(conn: sqlite3.Connection, child_id: str, kind: str,
                         t: float) -> int:
     """当日(本地零点起,且不早于 RULES_V2_SINCE)已落账的同类动作次数。
@@ -411,7 +427,7 @@ def _apply_action_locked(conn: sqlite3.Connection, child_id: str, actor: str, ki
         # 递减动作集不含营养/负荷键(feed/mama_say 走语料线,不在集内),整表同乘
         effects = {k: v * factor for k, v in effects.items()}
 
-    # ── 摩擦轴 annoyance(青春期专修;总纲④:摩擦从正常生活长出来,
+    # ── 摩擦轴 annoyance(青春期专修;设计原则:摩擦从正常生活长出来,
     # 独立于黑暗值——darkness 的虐待线语义上面一个字没动)。放在 factor 之后:
     # 唠叨/台阶都是全额账,不吃当日递减。──
     olive = False
@@ -742,13 +758,14 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
             if child["status"] == "graduated":
                 raise ValueError("graduated")  # 已毕业,摇篮房不再出声
             stage = stage_of(child, t)
-            # 结局日(M11):「再等一天」窗内他一整天只说那一句。
+            # 结局日:「再等一天」窗内他一整天只说那一句。
             # 定稿句直出:不走生成不耗 rng(rng_state 不动),utterance 照留痕。
+            # 窗带上界:未来时间戳的脏行/时钟回拨不把现在拖进定稿句模式。
             if stage == "adult":
                 stay = conn.execute(
                     "SELECT 1 FROM action_log WHERE child_id=? AND kind='stay'"
-                    " AND effective_at>? LIMIT 1",
-                    (child_id, t - cfg.STAY_LINE_HOURS * 3600)).fetchone()
+                    " AND effective_at>? AND effective_at<=? LIMIT 1",
+                    (child_id, t - cfg.STAY_LINE_HOURS * 3600, t)).fetchone()
                 if stay is not None:
                     from .texts import STAY_LINE
                     res = SpeakResult(text=STAY_LINE, retries=0, max_overlap=0,
@@ -784,7 +801,7 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
                 refuse_p = (st_now.get("darkness", 0.0) / 100.0) * ATTITUDE_REFUSE_MAX_P
                 # 摩擦轴(唯一允许的行为改动):已读不回改吃 max(黑暗值路, 摩擦轴路)。
                 # darkness 语义不动(虐待线);好好带娃 darkness 恒 0 时,
-                # 正常生活攒的摩擦也能让他不理你(总纲④)。
+                # 正常生活攒的摩擦也能让他不理你(设计原则:冲突从正常生活长出来)。
                 refuse_p = max(refuse_p, (st_now.get("annoyance", 0.0) / 100.0) *
                                cfg.ANNOY_REFUSE_MAX_P)
             # 消化过载 → 出口碎化比例(超过阈值的部分线性到 1)

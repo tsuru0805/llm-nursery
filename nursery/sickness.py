@@ -140,7 +140,7 @@ def fire_due_sickness(conn, brain, child_id: str, now=None) -> list[dict]:
                     "ts": t,
                     # outbox.idempotency_key 全局 UNIQUE,键带 child_id
                     # (夜哭/ask 同口径)
-                    "source_event_id": f"parentingsick:{child_id}:{ev['id']}:open",
+                    "source_event_id": f"sick:{child_id}:{ev['id']}:open",
                 }
                 out_expires = t + 86400
             else:
@@ -197,7 +197,7 @@ def settle_sickness(conn, child_id: str, now=None) -> int:
                 "kind": "nursery.event", "event": "sick_recovered",
                 "title": texts.SICK_HEAL.format(name=name), "note": None,
                 "ts": t,
-                "source_event_id": f"parentingsick:{child_id}:{ev['id']}:heal",
+                "source_event_id": f"sick:{child_id}:{ev['id']}:heal",
             }
             conn.execute(
                 "INSERT OR IGNORE INTO outbox(child_id, target, kind,"

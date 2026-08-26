@@ -137,7 +137,7 @@ def test_fire_emits_flat_str_wire(kid, conn, monkeypatch):
     assert p["window_until"] == str(int(ev["expires_at"]))
     assert not [k for k in p if k.startswith("_")]   # 内部槽位不上 wire
     # 契约=「字段是 str 或干脆没有」:None 不上 wire(swear 无 voice=键缺席,
-    # 不靠 gateway 收件侧剔形状——评审阻断)
+    # 不靠 gateway 收件侧剔形状——评审定案)
     assert "voice" not in p
     assert not [k for k, v in p.items() if v is None]
     # 二次触发不重复
@@ -385,7 +385,7 @@ def test_toolface_has_choose():
     assert {"choose", "farewell", "stay"} <= toolface._PUBLIC_CMDS
 
 
-# ── 崩溃续跑:settle 不许把半后果结案(评审阻断)──
+# ── 崩溃续跑:settle 不许把半后果结案(评审定案)──
 
 def test_settle_completes_half_done_choose(kid, conn, monkeypatch):
     """resolve 崩在动作账之后(偏置/拍板语料没落):settle 按账里的选项把
@@ -483,7 +483,7 @@ def test_bias_reset_uses_ratio_not_stacking(kid, conn):
             assert w == pytest.approx(base[ck] * 2.0)
 
 
-# ── 0824 定案:她也有拍板权(mama choose,谁先拍算谁的)──
+# ── 设计定案:她也有拍板权(mama choose,谁先拍算谁的)──
 
 def test_mama_resolves_choice_first_come_wins(kid, conn, monkeypatch):
     cid, brain = kid

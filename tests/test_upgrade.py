@@ -41,6 +41,9 @@ def _make_v8_db(path: str) -> str:
     assert "annoyance" not in ddl
     raw = sqlite3.connect(path)
     raw.executescript(ddl)
+    # v8 当年还没有这两个索引(_SCHEMA 是「最新全量」,老档形状要拆干净)
+    raw.execute("DROP INDEX IF EXISTS idx_psyche_dec_child_time")
+    raw.execute("DROP INDEX IF EXISTS idx_sched_child_kind")
     raw.execute("PRAGMA user_version=8")
     # 一个活着的老孩子+状态行(迁移要给他 backfill)
     raw.execute(
@@ -203,3 +206,63 @@ def test_unknown_policy_version_fails_closed(saves):
     with pytest.raises(ValueError):
         child_mod.stage_of(child, T0 + DAY)   # 坏档炸响不悄改语义
     conn.close()
+
+
+# ── 不翻旧账:升级前偷学语料不触发 swear 两难 ──
+
+def test_pre_upgrade_swear_corpus_never_fires(tmp_path):
+    from nursery import choices
+    p = _make_v8_db(str(tmp_path / "old.db"))
+    conn = pdb.connect(p)   # 打开即迁移,钉下 rules_v3_since
+    # 把升级戳对齐到夹具时间轴(迁移写的是真实墙钟;语义不变:戳=升级时刻)
+    t_upgrade = T0 + 10 * DAY
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE parenting_meta SET value=? WHERE child_id='oldkid'"
+                 " AND key='rules_v3_since'", (repr(t_upgrade),))
+    # 升级前偷学的语料,含词表词
+    conn.execute(
+        "INSERT INTO corpus_item(child_id, source_kind, speaker, text,"
+        " content_hash, tokenizer_version, char_count, training_weight,"
+        " acquired_at) VALUES('oldkid','archive','papa',"
+        "'他小声说了句卧槽然后跑了','h1','v1',12,1,?)", (t_upgrade - 5 * DAY,))
+    conn.commit()
+    choices.plan_choices(conn, "oldkid", now=t_upgrade + 3 * DAY)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM scheduled_event WHERE kind='choice'"
+        " AND idempotency_key LIKE 'choice:swear:%'").fetchone()[0] == 0
+    # 升级之后新偷学的同词=正常触发(不翻旧账≠永不触发)
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute(
+        "INSERT INTO corpus_item(child_id, source_kind, speaker, text,"
+        " content_hash, tokenizer_version, char_count, training_weight,"
+        " acquired_at) VALUES('oldkid','archive','papa',"
+        "'又听见一句卧槽这词真难甩','h2','v1',12,1,?)", (t_upgrade + 4 * DAY,))
+    conn.commit()
+    choices.plan_choices(conn, "oldkid", now=t_upgrade + 4 * DAY + 60)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM scheduled_event WHERE kind='choice'"
+        " AND idempotency_key LIKE 'choice:swear:%'").fetchone()[0] == 1
+    conn.close()
+
+
+# ── tick 自守闸:ask/choice/chain 任何一件炸了,events/outbox 照跑 ──
+
+@pytest.mark.parametrize("mod_name,fn_name", [
+    ("nursery.asks", "plan_asks"),
+    ("nursery.choices", "plan_choices"),
+    ("nursery.chains", "plan_chains"),
+])
+def test_tick_survives_new_mechanism_failure(saves, monkeypatch,
+                                             mod_name, fn_name):
+    import importlib
+    from nursery import scheduler
+    driver.init_birth("papa", "囡", now=T0)
+    mod = importlib.import_module(mod_name)
+
+    def _boom(*a, **kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(mod, fn_name, _boom)
+    out = scheduler.tick_one(str(saves / "papa" / "nursery.db"), "papa",
+                             now=T0 + 3600)
+    # 炸的那件空手而归,但事件系统与投递面照常存在
+    assert "events" in out and "outbox" in out

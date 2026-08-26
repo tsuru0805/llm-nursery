@@ -165,7 +165,7 @@ def fire_due_chain_eps(conn, brain: "child_mod.ChildBrain", child_id: str,
             since = prev_meta.get("fired_at") or (prev["due_at"] if prev else t)
             resp = _intervened(conn, child_id, since)
             # 介入窗还开着(上一集播晚了):等窗关再判,不抢答 bad
-            # (评审阻断)。窗关点恒早于本集 expires:
+            # (评审定案)。窗关点恒早于本集 expires:
             # since≤prev.due+GRACE,窗关≤prev.due+GRACE+WINDOW=+47h,
             # 本集 expires≥prev.due+21h+GRACE=+48h——等窗不会等成断更。
             # 分支一旦可判即确定(good=窗内首个父母动作定死;bad=窗已关),

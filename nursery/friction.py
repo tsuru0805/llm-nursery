@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """摩擦轴节律。
 
-总纲④:冲突从正常生活长出来——摩擦轴 annoyance 独立于黑暗值。darkness 保持
+设计原则:冲突从正常生活长出来——摩擦轴 annoyance 独立于黑暗值。darkness 保持
 虐待线语义(管教/忽视)一个字不动;annoyance 只从唠叨(child._apply_action_locked
 内落账)与「被晾」(本文件,复用 observer quiet 公共口径)长出来,给台阶就消。
 
@@ -86,7 +86,11 @@ def _quiet_annoyance(conn, child_id: str, t: float,
             "SELECT 1 FROM action_log WHERE child_id=? AND idempotency_key=?",
             (child_id, f"frictquiet:{date}")).fetchone() is not None:
         return False
-    gap = quiet_gap_seconds(conn, child_id, _midnight(t), t)
+    # 升级当日不翻旧账:窗起点不早于 v0.3 生效时刻(升级前那半天的
+    # 「没人理」不算账;observer 观察行照旧,只有摩擦账收这个闸)
+    v3 = child_mod._rules_v3_since(conn, child_id)
+    day0 = max(_midnight(t), v3)
+    gap = quiet_gap_seconds(conn, child_id, day0, t)
     if gap is None or gap < cfg.OBSERVE_QUIET_GAP_H * 3600:
         return False
     child_mod.apply_action(
@@ -116,7 +120,7 @@ def _night_egg(conn, child_id: str, t: float, stage: str = "teen") -> bool:
     if time.localtime(t).tm_hour < cfg.NIGHT_EGG_HOUR:
         return False
     date = _local_date(t)
-    # 幂等键前置(评审阻断):当日已发就直接回,不再跑生命周期级
+    # 幂等键前置(评审定案):当日已发就直接回,不再跑生命周期级
     # SUM 聚合——同晚重复 tick 的扫描量有界(每晚聚合至多一次)
     if conn.execute("SELECT 1 FROM outbox WHERE idempotency_key=? LIMIT 1",
                     (f"nightegg:{date}:{child_id}",)).fetchone() is not None:

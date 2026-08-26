@@ -247,7 +247,7 @@ def test_system_action_never_flips_branch(kid, conn):
 
 def test_late_ep2_final_waits_for_window(kid, conn):
     """上一集播晚了(仍在宽限内):介入窗未关时末集不抢答 bad,等窗关再判
-    (评审阻断);窗内父母来了照样 good。"""
+    (评审定案);窗内父母来了照样 good。"""
     cid, brain = kid
     _plan(conn, cid)
     _fire_ep(conn, brain, cid, 1)

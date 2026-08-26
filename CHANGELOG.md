@@ -36,6 +36,9 @@
 - `psyche_decision` 时间窗索引(v10)/`scheduled_event(child,kind,status)` 索引(v11,sickness 挂 child_speak 热路径的前提)。
 - toolface 白名单新增 `choose/farewell/stay`;driver 帮助与阶段解锁表随之更新(choose 幼儿期起,farewell/stay 仅成年)。
 - 文案微调:消化过载提示删祈使句(纯陈述口径)。
+- 「再等一天」窗查询带上界(`effective_at<=now`):未来时间戳脏行/时钟回拨不把现在拖进定稿句模式。
+- `--set-policy` 倒龄守卫 fail-closed:当前/目标阶段名不在新表=拒绝升版(未来改阶段名不静默漏守卫)。
+- tick 新机制(ask/选择题/事件链/摩擦/魔法/生病/成长)全部单件自守闸:任何一件故障不阻断事件系统与 outbox 投递。
 
 ## v0.2.1 — 2026-07-22
 

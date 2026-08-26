@@ -378,7 +378,7 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
         return f"{verb}。\n{_speak_line(res, name)}\n{_render_state(conn, cid, t)}"
 
     if cmd in ("farewell", "stay"):
-        # 结局日(M11):告别门开着才有意义,但指令本身幂等安全——
+        # 结局日:告别门开着才有意义,但指令本身幂等安全——
         # farewell 落账后由 judge_ending(下一拍或就地)判结局;stay=再陪一天,
         # 当天他只说那一句(child_speak 路)。
         gate = conn.execute(
@@ -389,7 +389,7 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
         child_mod.apply_action(conn, cid, PLAYER_DIR[persona], cmd,
                                idempotency_key=_idem(cmd, t), now=t)
         if cmd == "stay":
-            # 台词走 child_speak 留痕(评审阻断:界面词与 utterance 同源)
+            # 台词走 child_speak 留痕(评审定案:界面词与 utterance 同源)
             res = child_mod.child_speak(conn, brain, cid, trigger="stay", now=t)
             return f"{texts.FAREWELL_STAY_REPLY}\n「{res.text}」"
         from .events import judge_ending
@@ -544,7 +544,12 @@ def admin_set_policy(persona: str, version: int,
                     probe = dict(child)      # sqlite3.Row → dict,同键取值
                     probe["stage_policy_version"] = version
                     new_stage = child_mod.stage_of(probe, t0)
-                    if cur in names and names.index(new_stage) < names.index(cur):
+                    if cur not in names or new_stage not in names:
+                        # fail closed:当前/新阶段名不在目标表=映射未知,不升
+                        return json.dumps({"error": "stage_unmapped",
+                                           "from": cur, "to": new_stage},
+                                          ensure_ascii=False)
+                    if names.index(new_stage) < names.index(cur):
                         return json.dumps({"error": "stage_would_regress",
                                            "from": cur, "to": new_stage},
                                           ensure_ascii=False)

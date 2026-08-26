@@ -75,12 +75,16 @@ def plan_choices(conn, child_id: str, now=None) -> int:
             if stage not in tmpl["stages"]:
                 continue
             if tmpl["trigger"] == "swear":
-                # 触发型:偷学语料命中词表(长词先扫,防未来词表出现子串对)
+                # 触发型:偷学语料命中词表(长词先扫,防未来词表出现子串对)。
+                # 只扫 v0.3 生效时刻之后吃进的语料——老档升级前偷学的话
+                # 不翻旧账(child._rules_v3_since,「升级首拍连环爆」防线)
+                v3 = child_mod._rules_v3_since(conn, child_id)
                 for word in sorted(set(cfg.SWEAR_WORDS), key=len, reverse=True):
                     hit = conn.execute(
                         "SELECT 1 FROM corpus_item WHERE child_id=?"
-                        " AND source_kind='archive' AND instr(text, ?)>0 LIMIT 1",
-                        (child_id, word)).fetchone()
+                        " AND source_kind='archive' AND acquired_at>=?"
+                        " AND instr(text, ?)>0 LIMIT 1",
+                        (child_id, v3, word)).fetchone()
                     if hit is None:
                         continue
                     if _insert(conn, child_id, t, t + cfg.CHOICE_WINDOW_H * 3600,
@@ -151,12 +155,12 @@ def fire_due_choices(conn, brain: "child_mod.ChildBrain", child_id: str,
                 "option_b": texts.CHOICE_OPTIONS[(tmpl_name, "b")],
                 # 全 str(接入层可做纯 str 硬校验);注入前窗关过滤用
                 "window_until": str(int(ev["expires_at"])), "ts": t,
-                "source_event_id": f"parentingchoice:{child_id}:{ev['id']}",
+                "source_event_id": f"choice:{child_id}:{ev['id']}",
                 "_scene": scene if tmpl.get("voice") else None,
                 "_name": name, "_word": meta.get("word", ""),
             }
             # wire 不带内部槽位也不带 None:契约=「字段是 str 或干脆没有」,
-            # 不靠 接入层 收件侧帮忙剔形状(评审阻断)
+            # 不靠 接入层 收件侧帮忙剔形状(评审定案)
             conn.execute(
                 "INSERT OR IGNORE INTO outbox(child_id, target, kind, payload_json,"
                 " status, next_attempt_at, expires_at, idempotency_key)"
@@ -317,7 +321,7 @@ def settle_choices(conn, brain: "child_mod.ChildBrain", child_id: str,
     for ev in rows:
         # 拍过板但 status 没推进(resolve 崩在半路):不当超时处理——按动作账里
         # 记下的选项把**全部**幂等后果补完(偏置/拍板语料)再结案,不许"账面
-        # 已选、后果只落了一半"就 settled(评审阻断)
+        # 已选、后果只落了一半"就 settled(评审定案)
         prior = conn.execute(
             "SELECT payload_json, actor FROM action_log WHERE child_id=?"
             " AND idempotency_key=?", (child_id, _pick_key(ev))).fetchone()

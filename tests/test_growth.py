@@ -147,7 +147,7 @@ def test_notebook_needs_fresh_ok_decision(kid, conn):
 
 
 def test_notebook_rejects_future_rows(kid, conn):
-    """时间穿越挡住(评审阻断):未来时间戳的脏行不算「新鲜」。"""
+    """时间穿越挡住(评审定案):未来时间戳的脏行不算「新鲜」。"""
     cid, _ = kid
     t21 = _midnight(NOW) + 21 * 3600 + 900
     _decision(conn, cid, t21 + 3600, anchors=("未来",))   # created_at 在未来

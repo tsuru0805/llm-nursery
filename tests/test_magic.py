@@ -303,7 +303,7 @@ def test_non_gift_daily_event_no_card(conn, kid, monkeypatch):
 
 def test_gift_crash_replay_reuses_utterance(conn, kid, monkeypatch):
     """speak 提交后、_emit 前崩过(卡没落 outbox 没落)=重放重用当日 gift 话,
-    不再耗一次 RNG 不留第二条孤儿 utterance(评审阻断)。"""
+    不再耗一次 RNG 不留第二条孤儿 utterance(评审定案)。"""
     cid, brain = kid
     _pin_gift_pool(monkeypatch)
     # 模拟崩溃现场:当日已有一条 gift utterance,但事件/卡都没发出去
@@ -370,7 +370,7 @@ def test_gift_real_album_insert_failure_rolls_back(conn, kid, monkeypatch):
 
 
 def test_gift_card_write_failure_degrades_to_plain_event(conn, kid, monkeypatch):
-    """藏品卡写不动=退化成普通每日事件,绝不炸 tick(评审阻断)。"""
+    """藏品卡写不动=退化成普通每日事件,绝不炸 tick(评审定案)。"""
     cid, brain = kid
     _pin_gift_pool(monkeypatch)
     real_emit = events._emit

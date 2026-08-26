@@ -572,7 +572,7 @@ def judge_ending(conn, brain, child_id: str, now=None) -> str | None:
     if age < adult_start + ADULT_GRADUATE_DAYS:
         return None
 
-    # (M11):毕业线只开「告别门」,**绝不自动开奖**——判定要等主照护人亲口 farewell。
+    # :毕业线只开「告别门」,**绝不自动开奖**——判定要等主照护人亲口 farewell。
     # 「再等一天」(stay)不推迟任何时钟:门一直开着,他一直等;stay 的意义在
     # child_speak(那一天他只说那句话)。门事件幂等一次;告别信文案=五期文案刀。
     gate_name = child["name"] or "孩子"

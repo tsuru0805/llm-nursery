@@ -271,23 +271,32 @@ def tick_one(db_path: str, viewer: str, now: float | None = None) -> dict:
                 brain = child_mod.ChildBrain.load(conn, cid)
                 scheduled = schedule_night_feed(conn, cid, now=t)
                 fired = fire_due_events(conn, brain, cid, now=t)
-                # ask「他来找你」:排班→触发→窗关记账(全幂等)
-                from .asks import fire_due_asks, plan_asks, settle_asks
-                asks = {"planned": plan_asks(conn, cid, now=t),
-                        "fired": len(fire_due_asks(conn, brain, cid, now=t))}
-                asks.update(settle_asks(conn, cid, now=t))
-                # 选择题:排班(swear 触发型同拍即 fire)→触发→窗关自决/记 miss
-                from .choices import (fire_due_choices, plan_choices,
-                                      settle_choices)
-                choices = {"planned": plan_choices(conn, cid, now=t),
-                           "fired": len(fire_due_choices(conn, brain, cid,
-                                                         now=t))}
-                choices.update(settle_choices(conn, brain, cid, now=t))
-                # 事件链:开播抽签→当日集触发(分支判定在末集 fire 内)
-                from .chains import fire_due_chain_eps, plan_chains
-                chains = {"planned": plan_chains(conn, cid, now=t),
-                          "fired": len(fire_due_chain_eps(conn, brain, cid,
-                                                          now=t))}
+                # ask/选择题/事件链:三件各自自守闸(fail-open)——任何一件
+                # 坏了绝不拦后面的偷学/events/outbox 投递(与 friction/growth
+                # 同哲学;各机制内部全幂等,空结果=本拍照旧)
+                try:
+                    from .asks import fire_due_asks, plan_asks, settle_asks
+                    asks = {"planned": plan_asks(conn, cid, now=t),
+                            "fired": len(fire_due_asks(conn, brain, cid, now=t))}
+                    asks.update(settle_asks(conn, cid, now=t))
+                except Exception:
+                    asks = {}
+                try:
+                    from .choices import (fire_due_choices, plan_choices,
+                                          settle_choices)
+                    choices = {"planned": plan_choices(conn, cid, now=t),
+                               "fired": len(fire_due_choices(conn, brain, cid,
+                                                             now=t))}
+                    choices.update(settle_choices(conn, brain, cid, now=t))
+                except Exception:
+                    choices = {}
+                try:
+                    from .chains import fire_due_chain_eps, plan_chains
+                    chains = {"planned": plan_chains(conn, cid, now=t),
+                              "fired": len(fire_due_chain_eps(conn, brain, cid,
+                                                              now=t))}
+                except Exception:
+                    chains = {}
                 stolen = steal_corpus(conn, brain, cid, viewer, now=t)
                 # 睡眠整理:每日 07:00 后首拍重建词块索引;部署后首拍引导;
                 # 任何故障=None 照旧(词块是派生数据,坏了下拍重来)
@@ -316,7 +325,7 @@ def tick_one(db_path: str, viewer: str, now: float | None = None) -> dict:
                     grw = {}
                 from .events import tick_events
                 evs = tick_events(conn, brain, cid, now=t)
-                # 语料魔法(M5)+生病 arc(M7):低频/幂等/fail-open,
+                # 语料魔法+生病 arc:低频/幂等/fail-open,
                 # 任何一件坏了绝不炸 tick(送礼藏品卡挂每日事件里,随 tick_events 走)
                 try:
                     from .magic import tick_magic

@@ -143,7 +143,7 @@ def _obs_stale_chunk(conn, child_id: str, day0: float, t: float):
 
 
 def _obs_taught_word(conn, child_id: str, day0: float, t: float):
-    """溯源闭环(/M10):他今天说的词,是昨天谁教的。判据全真——
+    """溯源闭环:他今天说的词,是昨天谁教的。判据全真——
     词=昨天亲口语料(direct/night_feed/book)与今天 accepted 话的公共 2-6 字片段,
     且至少含一个「昨天才第一次进语料」的字;查不出=不发,绝不编。"""
     y0 = day0 - 86400

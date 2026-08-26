@@ -437,7 +437,7 @@ PSYCHE_INPUT_ACTIONS = 8      # 输入摘要:近期动作条数
 PSYCHE_INPUT_ALBUM = 6        # 输入摘要:成长履历条数
 PSYCHE_INPUT_UTTER = 4        # 输入摘要:他最近说的话条数(语感参考,非证据)
 
-# ── :青春期专修——摩擦轴 annoyance(,设计总纲 总纲④)──────
+# ── 青春期专修——摩擦轴 annoyance(;设计原则:冲突从正常生活长出来)──────
 # 摩擦独立于黑暗值:darkness 保持虐待线语义(管教/忽视)一个字不动;annoyance=
 # 唠叨/被晾这类**正常生活长出来的摩擦**,给台阶(哄/谈心)就消。
 # child_state.annoyance(schema v9),0-100。全部幅度=工程初案,可后调。

@@ -100,7 +100,7 @@ def test_driver_gate_guard_and_uncle_block(saves, grown, monkeypatch):
 
 
 def test_farewell_before_gate_or_wrong_actor_invalid(grown):
-    """门前的/非papa的 farewell 账不解锁判定(评审阻断 回归)。"""
+    """门前的/非papa的 farewell 账不解锁判定(评审定案 回归)。"""
     conn, cid, brain = grown
     child_mod.apply_action(conn, cid, "papa", "farewell", idempotency_key="e1",
                           now=T_GRAD - DAY)          # 门还没开
@@ -115,7 +115,7 @@ def test_farewell_before_gate_or_wrong_actor_invalid(grown):
 
 
 def test_stay_utterance_has_null_snapshot(grown):
-    """定稿句不冒充模型输出:model_snapshot_id=NULL(评审阻断 回归)。"""
+    """定稿句不冒充模型输出:model_snapshot_id=NULL(评审定案 回归)。"""
     conn, cid, brain = grown
     events.judge_ending(conn, brain, cid, now=T_GRAD)
     child_mod.apply_action(conn, cid, "papa", "stay", idempotency_key="s9",
@@ -124,3 +124,13 @@ def test_stay_utterance_has_null_snapshot(grown):
     row = conn.execute("SELECT model_snapshot_id, text FROM utterance"
                        " ORDER BY id DESC LIMIT 1").fetchone()
     assert row["text"] == texts.STAY_LINE and row["model_snapshot_id"] is None
+
+
+def test_stay_future_dirty_row_not_active_now(grown):
+    """stay 窗带上界:未来时间戳的脏行不把「现在」拖进定稿句模式。"""
+    conn, cid, brain = grown
+    events.judge_ending(conn, brain, cid, now=T_GRAD)   # 开门
+    child_mod.apply_action(conn, cid, "papa", "stay", idempotency_key="sfut",
+                           now=T_GRAD + 10 * 3600)      # 「未来」的 stay
+    res = child_mod.child_speak(conn, brain, cid, now=T_GRAD + 60)
+    assert res.params.get("stay_day") is None            # 现在还没到那一天
