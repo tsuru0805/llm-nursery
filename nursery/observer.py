@@ -58,9 +58,10 @@ def _obs_unfinished(conn, child_id: str, day0: float, t: float):
     return texts.OBS_UNFINISHED if n >= 1 else None
 
 
-def _obs_quiet(conn, child_id: str, day0: float, t: float):
-    """白天(07:00 起)最长无人互动间隔 ≥ 阈值。「没闹」必须有据:窗内存在任何
-    fired 调度事件(哭闹)即不发(评审。"""
+def quiet_gap_seconds(conn, child_id: str, day0: float, t: float) -> float | None:
+    """白天(07:00 起)最长无人互动间隔的**公共口径**(观察行与摩擦轴「被晾」
+    共用同一判定,统计不重造)。返回间隔秒数;白天窗还没开/窗内有 fired 夜哭
+    (他真闹过,不算被晾)=None。"""
     start = day0 + 7 * 3600
     if t <= start:
         return None
@@ -69,14 +70,43 @@ def _obs_quiet(conn, child_id: str, day0: float, t: float):
         " AND effective_at>=? AND effective_at<=? ORDER BY effective_at",
         (child_id, start, t))] + [t]
     gap = max(b - a for a, b in zip(stamps, stamps[1:]))
-    if gap < cfg.OBSERVE_QUIET_GAP_H * 3600:
-        return None
     cried = conn.execute(
-        "SELECT 1 FROM scheduled_event WHERE child_id=? AND status='fired'"
-        " AND due_at>=? AND due_at<=? LIMIT 1", (child_id, start, t)).fetchone()
+        "SELECT 1 FROM scheduled_event WHERE child_id=? AND kind='night_cry'"
+        " AND status='fired' AND due_at>=? AND due_at<=? LIMIT 1",
+        (child_id, start, t)).fetchone()  # 钉 kind:白天 fired 的 ask()不算哭
     if cried is not None:
         return None
+    return gap
+
+
+def _obs_quiet(conn, child_id: str, day0: float, t: float):
+    """白天最长无人互动间隔 ≥ 阈值。「没闹」必须有据:窗内存在 fired 哭闹即不发
+    (不许编)。判定=quiet_gap_seconds 公共口径。"""
+    gap = quiet_gap_seconds(conn, child_id, day0, t)
+    if gap is None or gap < cfg.OBSERVE_QUIET_GAP_H * 3600:
+        return None
     return texts.OBS_QUIET.format(hours=int(gap // 3600))
+
+
+def _obs_diary(conn, child_id: str, day0: float, t: float):
+    """日记上锁片段(,teen 限定):从他**当日 accepted utterance** 里取一句
+    真话,遮一半字符——「他的日记你只能看到一角」。真数据不编,没说过话=不发。
+    取句确定性(最长优先,平手取最新),同日重算同一句。"""
+    from . import child as child_mod
+    child = child_mod.get_child(conn, child_id)
+    if child_mod.stage_of(child, t) != "teen":
+        return None
+    row = conn.execute(
+        "SELECT text FROM utterance WHERE child_id=? AND accepted=1"
+        " AND created_at>=? AND created_at<=?"
+        " ORDER BY LENGTH(text) DESC, id DESC LIMIT 1",
+        (child_id, day0, t)).fetchone()
+    if row is None or len(row["text"]) < 4:
+        return None
+    txt = row["text"]
+    keep = max(2, len(txt) // 2)
+    peek = txt[:keep] + "▓" * (len(txt) - keep)
+    return texts.OBS_DIARY.format(peek=peek)
 
 
 def _obs_new_chars(conn, child_id: str, day0: float, t: float):
@@ -112,9 +142,62 @@ def _obs_stale_chunk(conn, child_id: str, day0: float, t: float):
     return None
 
 
+def _obs_taught_word(conn, child_id: str, day0: float, t: float):
+    """溯源闭环(/M10):他今天说的词,是昨天谁教的。判据全真——
+    词=昨天亲口语料(direct/night_feed/book)与今天 accepted 话的公共 2-6 字片段,
+    且至少含一个「昨天才第一次进语料」的字;查不出=不发,绝不编。"""
+    y0 = day0 - 86400
+    taught = conn.execute(
+        "SELECT speaker, text FROM corpus_item WHERE child_id=?"
+        " AND source_kind IN ('direct','night_feed','book')"
+        " AND acquired_at>=? AND acquired_at<?", (child_id, y0, day0)).fetchall()
+    if not taught:
+        return None
+    said_today = [r["text"] for r in conn.execute(
+        "SELECT text FROM utterance WHERE child_id=? AND accepted=1"
+        " AND created_at>=? AND created_at<=?", (child_id, day0, t))]
+    if not said_today:
+        return None
+    old_chars = set("".join(r["text"] for r in conn.execute(
+        "SELECT text FROM corpus_item WHERE child_id=? AND acquired_at<?",
+        (child_id, y0))))
+    cands = []   # (len, word, speaker) 全收集后词面定序(与 _obs_repeat 同纪律)
+    for row in taught:
+        fresh = {c for c in row["text"] if c not in old_chars and not c.isspace()}
+        if not fresh:
+            continue
+        for run in _clean_runs(row["text"]):
+            for n in (2, 3, 4, 5, 6):
+                for i in range(len(run) - n + 1):
+                    w = run[i:i + n]
+                    if fresh & set(w) and any(w in s for s in said_today):
+                        cands.append((n, w, row["speaker"] or ""))
+    if not cands:
+        return None
+    _, w, speaker = max(cands, key=lambda x: (x[0], x[1]))
+    who = texts.ROLE_CN.get(speaker, "有人")   # 声部显示名(papa/mama)
+    return texts.OBS_TAUGHT.format(word=w, who=who)
+
+
+def _obs_asks(conn, child_id: str, day0: float, t: float):
+    """今天他主动来找人的战报(,吃settle 真账;零条=不发)。"""
+    rows = conn.execute(
+        "SELECT status FROM scheduled_event WHERE child_id=? AND kind='ask'"
+        " AND status IN ('settled_hit','settled_miss')"
+        " AND expires_at>=? AND expires_at<=?", (child_id, day0, t)).fetchall()
+    if not rows:
+        return None
+    hit = sum(1 for r in rows if r["status"] == "settled_hit")
+    return texts.OBS_ASKS.format(n=len(rows), m=hit)
+
+
 _CANDIDATES = (
+    # diary()自身钉 teen——非 teen 恒 None 不占名额;teen 期招牌观察排最前
+    ("diary", _obs_diary),
+    ("taught", _obs_taught_word),   # :溯源点名——养成感的核心闭环
     ("repeat", _obs_repeat),
     ("unfinished", _obs_unfinished),
+    ("asks", _obs_asks),            # :今天他来找过人的真账
     ("quiet", _obs_quiet),
     ("new_chars", _obs_new_chars),
     ("stale_chunk", _obs_stale_chunk),

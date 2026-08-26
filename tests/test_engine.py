@@ -124,13 +124,27 @@ def test_scrub_pii():
 # ── 阶段推导(绝对时间) ──
 
 def test_stage_progression(conn):
+    # 新建档默认 policy v2:teen 24-48 天(v0.3 起;v1 老档仍 24-36,见下)
     cid = child_mod.create_child(conn, "papa", name="孩子", now=T0)
     c = child_mod.get_child(conn, cid)
+    assert c["stage_policy_version"] == 2
     assert child_mod.stage_of(c, T0 + 1 * DAY) == "infant"
     assert child_mod.stage_of(c, T0 + 5 * DAY) == "toddler"
     assert child_mod.stage_of(c, T0 + 15 * DAY) == "child"
     assert child_mod.stage_of(c, T0 + 30 * DAY) == "teen"
-    assert child_mod.stage_of(c, T0 + 40 * DAY) == "adult"
+    assert child_mod.stage_of(c, T0 + 40 * DAY) == "teen"   # v2:teen 到 48
+    assert child_mod.stage_of(c, T0 + 50 * DAY) == "adult"
+
+
+def test_stage_progression_policy_v1_pinned(conn):
+    """老档钉 v1:升级不悄改既有孩子的人生进度(阶段表按 child 的版号查)。"""
+    cid = child_mod.create_child(conn, "papa", name="孩子", now=T0)
+    with child_mod.tx(conn):
+        conn.execute("UPDATE child SET stage_policy_version=1 WHERE child_id=?",
+                     (cid,))
+    c = child_mod.get_child(conn, cid)
+    assert child_mod.stage_of(c, T0 + 30 * DAY) == "teen"
+    assert child_mod.stage_of(c, T0 + 40 * DAY) == "adult"  # v1:teen 到 36
 
 
 def test_embryo_placeholder(conn):

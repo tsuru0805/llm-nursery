@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-STAGE_POLICY_VERSION = 1
+STAGE_POLICY_VERSION = 2   # 新建档默认档(v2:teen 续到 48 天,中后期玩法要铺开的空间)
 
 # 阶段推导:logical_age_days = (now - born_at - total_paused) / 86400,查表取第一个上限>年龄的段
 STAGE_SCHEDULE_V1 = [
@@ -16,6 +16,13 @@ STAGE_SCHEDULE_V1 = [
     ("teen", 36.0),       # 青春期 24-36 天
     ("adult", float("inf")),  # 成年
 ]
+# v2:teen 上限 36→48——中后期新玩法要铺开的空间;
+# 既有孩子不悄改(config 头注红线),升版走 driver --set-policy 显式迁移(孩子=定案过)。
+STAGE_SCHEDULE_V2 = [
+    ("infant", 4.0), ("toddler", 12.0), ("child", 24.0),
+    ("teen", 48.0), ("adult", float("inf")),
+]
+STAGE_SCHEDULES = {1: STAGE_SCHEDULE_V1, 2: STAGE_SCHEDULE_V2}
 
 STAGE_CN = {
     "embryo": "受精卵", "infant": "婴儿期", "toddler": "幼儿期",
@@ -69,6 +76,13 @@ ACTION_EFFECTS = {
     # 偷学(system 被动听墙角):只算吃到语料(营养口径与 feed 同),**零亲密零心情**
     # ——不冒充照护人的陪伴;也不在夜哭响应集/递减集/PSYCHE_RULES/BOND_RULES 里
     "overhear": dict(nutrition=+18.0),
+    # 结局日:说再见/再等一天(状态效果轻,重头在门语义;psyche 条目另配)
+    "farewell": dict(mood=-2.0),
+    "stay":     dict(mood=+6.0, intimacy=+2.0),
+    # 选择题:拍板那句话落语料的动作壳。刻意不用 talk——talk 是温暖动词
+    # (darkness -2.5),会把 choice_scold 刚记上的管教代价当场抵掉;
+    # 心理/关系账全走选项 kind 本身,这里只留一点点"说了话"的痕迹
+    "choice_say": dict(intimacy=+0.5),
 }
 
 # ── 妈妈通道(第二照护人的互动;actor='mama' 记 action_log)──
@@ -179,6 +193,18 @@ BOND_RULES = {   # kind → 对该动作发起人的关系增量
     "mama_say":    dict(attachment=+0.8, trust=+0.5),
     # 夜哭整晚没人来:账记主照护人(夜哭账只认主照护人,actor=system 特判)
     "neglect": dict(trust=-3.0, predictability=-2.0, resentment=+3.0),
+    # ask 被接住:对答话那个人更黏更信(actor=真实响应者;漏窗零 bond 账)
+    "ask_answered": dict(attachment=+1.5, trust=+1.0),
+    # 选择题(actor=拍板的人;超时件 actor=system 天然零 bond 写入)
+    "choice_scold":   dict(resentment=+1.0, trust=+0.5),   # 被管:憋屈,但知道有人管
+    "choice_laugh":   dict(attachment=+1.0),               # 一起笑=同伙
+    "choice_keep":    dict(attachment=+1.5, trust=+1.0),
+    "choice_refuse":  dict(resentment=+1.5),
+    "choice_indulge": dict(attachment=+1.5),
+    "choice_settle":  dict(trust=+1.0, predictability=+1.0),
+    # 事件链好分支(actor=介入的那个人;bad 分支 actor=system 零 bond)
+    "arc_friend_good":  dict(attachment=+1.0, trust=+1.0),
+    "arc_contest_good": dict(trust=+1.5, predictability=+1.0),
 }
 BOND_NIGHT_RESPONSE = dict(trust=+2.0, predictability=+1.5)  # 夜哭窗内响应加成(主照护人)
 BOND_CALM_SOOTHE = dict(attachment=+0.5)   # 平静时也被哄=更黏这个人(依赖面)
@@ -199,6 +225,8 @@ DARKNESS_BY_ACTION = {          # 动作 → 黑暗值增减(管教涨,温暖降
     # 妈妈的温暖也降叛逆(青春期妈妈是缓冲垫,幅度比主照护人同类略轻);
     # 夜哭忽视账仍只认主照护人。
     "mama_say": -2.0, "mama_soothe": -1.5, "mama_hug": -1.5, "mama_touch": -1.0,
+    # 管脏话是轻量管教(幅度远小于 discipline +4;两难的代价要真实)
+    "choice_scold": +1.5,
 }
 DARKNESS_NEGLECT_NIGHT = 6.0    # 一整晚夜哭零回应 +6
 DARKNESS_HEAL_PER_H = 0.05      # 自然微愈
@@ -211,12 +239,121 @@ ATTITUDE_REFUSE_MAX_P = 0.5     # teen 黑暗值=100 时已读不回概率上限
 # ── 里程碑/随机事件/语出惊人 ──
 MILESTONE_NEW_CHARS_STEP = 60   # 词汇量每 +60 新字一次"他又学会好多话"
 FIRST_SENTENCE_MIN_LEN = 8      # 首次独立成句判据
-DAILY_EVENT_P = 0.35            # 每日随机事件概率(tick 抽,日上限 1)
+DAILY_EVENT_P = 0.55            # 每日随机事件概率(tick 抽,日上限 1;v0.3 上调 0.35→0.55)
 SURPRISE_P_PER_TICK = 0.06      # 语出惊人:child/teen 期每 tick 概率
-SURPRISE_STAGE_QUOTA = {"child": 3, "teen": 2}   # 每阶段引爆上限(防固定黄色笑话)
-ADULT_GRADUATE_DAYS = 1.5       # 进成年期后多少天触发结局
+# v0.3:配额从「每阶段终身」改「滚动 7 天」——终身配额烧完后整条机制永久哑火
+SURPRISE_WEEK_QUOTA = {"child": 2, "teen": 2}
+SURPRISE_MIN_GAP_H = 24.0       # 两次引爆最小间隔(防几分钟连爆)
+SURPRISE_ANCHOR_MIN_RUN = 6     # 锚滤渣:锚只从 ≥此长度的纯话芯连续段里取
+ADULT_GRADUATE_DAYS = 1.5       # 进成年期后多少天到达毕业线(v0.3 起=只开告别门,不自动判)
+STAY_LINE_HOURS = 24.0          # 「再等一天」后,他只说那句话的时长
 
 # 每日随机事件池文案 → texts.DAILY_EVENTS(文案层);概率/日上限仍在本文件
+
+# ── 需求事件 ask「他来找你」──────────────────────────────────
+# 婴儿期无 ask:夜哭就是婴儿版 ask。当日确定性抽签((child,date) 种子,重复 tick
+# 同班表);每条 ask 有响应窗,窗内目标动词=接住;漏窗不惩罚(他自己玩去了)。
+ASK_HOURS = (9, 21)               # 发起时段(本地时,小时)
+ASK_STAGE_PLAN = {                # stage → 当日抽签参数
+    # day_p=今天有没有人来找;n=(min,max) 条数;window_h=响应窗;mama_p=找妈妈概率
+    "toddler": dict(day_p=0.9, n=(1, 2), window_h=2.0, mama_p=0.35),
+    "child":   dict(day_p=0.75, n=(1, 2), window_h=3.0, mama_p=0.35),
+    "teen":    dict(day_p=0.4, n=(1, 1), window_h=4.0, mama_p=0.4),
+    "adult":   dict(day_p=0.25, n=(1, 1), window_h=6.0, mama_p=0.5),
+}
+ASK_RESPONSE_KINDS = {            # 接住判定动词集(按 ask 目标分)
+    "papa": ("talk", "play", "teach", "soothe", "feed", "diaper", "burp"),
+    "mama": ("mama_say", "mama_hug", "mama_soothe", "mama_touch"),
+}
+ASK_ANSWERED_EFFECTS = {"mood": +3.0, "intimacy": +1.0}   # 状态账(psyche/bond 走规则表)
+
+# ── 告状/吐槽——ask 触发时按概率把场景稿换成告状,内容=action_log 真账 ──
+TATTLE_P = 0.35            # 每条 ask 换成告状稿的概率(事件种子 rng,确定性)
+TATTLE_PLAY_KINDS = ("play", "talk")          # 「陪我玩」口径(主照护人)
+TATTLE_TOUCH_KINDS = ("mama_touch", "mama_hug", "mama_soothe")  # 「摸摸我」口径(妈妈)
+
+# ── 选择题事件(两难)────────────────────────────────────────
+# 事件从播报升级为两难:选项有真后果(state/psyche/bond 走账,词块走偏置)。
+# 两类触发:trigger='swear'=偷学语料命中词表即触发(每词一生一次);
+# trigger='lottery'=确定性日抽签((child,模板,date) 种子),**每模板一生一次**
+# ——同一幕两难重播必穿帮,池子靠加模板扩,不靠重播。
+CHOICE_WINDOW_H = 12.0            # 响应窗(小时):窗内 choose 有效,窗关他自己消化
+CHOICE_HOURS = (9, 21)            # 抽签型两难的发生时段(本地时;swear=触发型即时)
+CHOICE_DAY_P = 0.25               # 抽签型:每模板每日开场概率
+# 偷学命中词表(小表 v1;⚠只收多字且无常用词子串碰撞的——"妈的"是"妈妈的"
+# 的子串,禁止入表:误触发+误抑制两头炸)
+SWEAR_WORDS = ("他妈的", "卧槽", "傻逼", "混蛋", "见鬼", "去死")
+CHOICE_SWEAR_BOOST = 2.5          # 笑场:该词词块权重乘数(后续说话更容易冒出来)
+CHOICE_SWEAR_LEFT_BOOST = 1.5     # 超时没人管:词自己留下来(半个"笑"的量)
+# 模板表(数据驱动;文案全在 texts.py 键值制)。options 键=a/b;
+# kind=动作账 kind(psyche/bond 走规则表,state 走 effects);
+# bias=词块偏置(0=抑制,>1=提权;仅带 word 的模板生效);
+# timeout=窗关没人拍板时引擎自决(None=只记 miss);voice=场景稿含 {voice} 时
+# 让他真实开口(child_speak,失败=兜底稿)。
+CHOICE_TEMPLATES = {
+    "swear": dict(
+        trigger="swear",
+        stages=("toddler", "child", "teen", "adult"),
+        options=dict(
+            a=dict(kind="choice_scold", effects=dict(mood=-3.0), bias=0.0),
+            b=dict(kind="choice_laugh", effects=dict(mood=+3.0),
+                   bias=CHOICE_SWEAR_BOOST),
+        ),
+        timeout=dict(kind="choice_swear_left", effects={},
+                     bias=CHOICE_SWEAR_LEFT_BOOST),
+    ),
+    "stray_cat": dict(
+        trigger="lottery",
+        stages=("toddler", "child", "teen", "adult"),
+        options=dict(
+            a=dict(kind="choice_keep", effects=dict(mood=+6.0, fatigue=+4.0)),
+            b=dict(kind="choice_refuse", effects=dict(mood=-5.0)),
+        ),
+        timeout=None,
+    ),
+    "stay_up": dict(
+        trigger="lottery",
+        stages=("toddler", "child"),
+        voice=True,
+        options=dict(
+            a=dict(kind="choice_indulge", effects=dict(mood=+5.0, fatigue=+6.0)),
+            b=dict(kind="choice_settle", effects=dict(fatigue=-4.0)),
+        ),
+        timeout=None,
+    ),
+}
+
+# ── 连续剧事件链 ────────────────────────────────────────────
+# 3 天一条有状态连续剧:每天傍晚一集,集与集之间父母是否介入(asks.settle 同款
+# 窗口判定口径)决定末集分支。scheduled_event kind='chain',chain_id='arc:<模板>'
+# (night_cry combo 用 'combo',语义不撞);幂等键=(child,模板,集数)。
+# 每模板一生一次(同 choice:连续剧重播必穿帮)。
+CHAIN_HOURS = (18, 21)            # 每集发生时段(本地时,傍晚回家讲白天的事)
+CHAIN_DAY_P = 0.3                 # 每模板每日开播抽签概率
+CHAIN_EP_GRACE_H = 27.0           # 集宽限(过 due 此时长还没 fire=断更,整条剧废弃)
+CHAIN_INTERVENE_WINDOW_H = 20.0   # 介入窗:上一集真 fire 起算(fired_at 口径同 ask)
+CHAIN_INTERVENE_KINDS = ("talk", "soothe", "play", "teach",
+                         "mama_say", "mama_soothe", "mama_hug", "mama_touch")
+CHAIN_TEMPLATES = {
+    # 交朋友→吵架→和好/记仇
+    "friend": dict(
+        stages=("toddler", "child"),
+        episodes=3,
+        branches=dict(
+            good=dict(kind="arc_friend_good", effects=dict(mood=+6.0)),
+            bad=dict(kind="arc_friend_bad", effects=dict(mood=-4.0)),
+        ),
+    ),
+    # 朗诵比赛→排练受挫→上台/退赛
+    "contest": dict(
+        stages=("child", "teen", "adult"),
+        episodes=3,
+        branches=dict(
+            good=dict(kind="arc_contest_good", effects=dict(mood=+6.0)),
+            bad=dict(kind="arc_contest_bad", effects=dict(mood=-4.0)),
+        ),
+    ),
+}
 
 # ── LLM 心理层(可选;不配 API key 整层停用)──────────────────────
 # 三层:程序层(本表,可审计事实)+ DS 决策层(psyche.py,结构化 JSON)+
@@ -251,6 +388,23 @@ PSYCHE_RULES = {
     "neglect":    dict(anxiety=+6.0, independence=+3.0, esteem=-2.0),
     # 系统事件:离家出走(events.maybe_runaway 状态跃迁同事务落账)
     "runaway":    dict(independence=+8.0, anxiety=+4.0, esteem=-2.0),
+    # ask:主动去找人被接住=被当回事;漏窗=他自己玩去了(不惩罚,独立微涨)
+    "ask_answered": dict(anxiety=-1.5, esteem=+1.5),
+    "ask_missed":   dict(independence=+0.8),
+    # 选择题后果(脏话「管=自尊-」为设计样例)
+    "choice_scold":      dict(esteem=-2.5, anxiety=+1.5),
+    "choice_laugh":      dict(esteem=+1.5),
+    "choice_swear_left": dict(independence=+0.5),   # 超时没人管:词留下,自己消化
+    "choice_keep":       dict(esteem=+2.0, anxiety=-1.0),
+    "choice_refuse":     dict(esteem=-1.5, independence=+1.0),
+    "choice_indulge":    dict(anxiety=-1.5),
+    "choice_settle":     dict(anxiety=-1.0),
+    "choice_missed":     dict(independence=+0.5),   # 窗关没人拍板:他自己拿了主意
+    # 事件链末集分支(good=有人接住;bad=自己扛过去)
+    "arc_friend_good":  dict(anxiety=-2.0, esteem=+2.0),
+    "arc_friend_bad":   dict(anxiety=+2.0, independence=+1.5, esteem=-1.0),
+    "arc_contest_good": dict(esteem=+3.0, anxiety=-1.0),
+    "arc_contest_bad":  dict(esteem=-2.5, independence=+1.0),
 }
 # 刻意不配轴增量的事件:每日随机事件/语出惊人(氛围事件,不瞎编心理效果;
 # 它们照样进 DS 输入的近期事件供决策引用)。
@@ -282,3 +436,87 @@ PSYCHE_MAX_ANCHORS = 5        # 锚词上限(每个 ≤8 字)
 PSYCHE_INPUT_ACTIONS = 8      # 输入摘要:近期动作条数
 PSYCHE_INPUT_ALBUM = 6        # 输入摘要:成长履历条数
 PSYCHE_INPUT_UTTER = 4        # 输入摘要:他最近说的话条数(语感参考,非证据)
+
+# ── :青春期专修——摩擦轴 annoyance(,设计总纲 总纲④)──────
+# 摩擦独立于黑暗值:darkness 保持虐待线语义(管教/忽视)一个字不动;annoyance=
+# 唠叨/被晾这类**正常生活长出来的摩擦**,给台阶(哄/谈心)就消。
+# child_state.annoyance(schema v9),0-100。全部幅度=工程初案,可后调。
+ANNOY_STAGES = ("child", "teen")  # v0.3:扩 child 后半(前半懂事,不闹)
+ANNOY_CHILD_FROM_FRAC = 0.5       # child 阶段走过这个比例才开始闹别扭(「后半」判定)
+ANNOY_STAGE_SCALE = {"child": 0.5, "teen": 1.0}   # child 摩擦账减半:会别扭,别扭得轻
+ANNOY_DRAMA_STAGES = ("teen",)    # 摔门/深夜彩蛋=青春期戏码不下放(已读不回自有 teen 闸)
+ANNOY_HEAL_PER_H = 0.5            # 自然时衰(比 darkness 0.05 快得多:气几天就淡)
+ANNOY_NAG_KINDS = frozenset({"talk", "teach"})   # 当日同类重复超免费额=唠叨
+ANNOY_NAG_FREE = 3                # 免费额:当日同类第 4 次起算唠叨(_daily_repeat_count 口径)
+ANNOY_NAG_STEP = 6.0              # 唠叨超额部分每次 +6
+ANNOY_QUIET_STEP = 10.0           # 白天被晾整段(observer quiet 同口径,复用不重造)+10
+ANNOY_OLIVE_KINDS = frozenset({"talk", "soothe", "mama_soothe", "mama_hug"})
+ANNOY_OLIVE_MIN = 40.0            # 高位阈:此值以上的哄/谈心=「给台阶」不算唠叨
+ANNOY_OLIVE_DROP = 25.0           # 台阶消解幅度(另发一条和解事件,每日至多一次)
+ANNOY_REFUSE_MAX_P = 0.35         # annoyance=100 时已读不回概率上限(摩擦路;
+                                  # 黑暗值路 ATTITUDE_REFUSE_MAX_P 语义不动,取 max)
+ANNOY_DOOR_AT = 70.0              # 摔门事件确定性阈值(每日至多一次,幂等)
+ANNOY_SNARK_MIN = 50.0            # 顶嘴拧话阈值:锚词换成父母最近 direct 语料拧着用
+SNARK_SOURCE_ROWS = 5             # 顶嘴锚词取材:最近 N 条 direct 语料
+SNARK_MAX_ANCHORS = 4             # 顶嘴锚词上限(每个 ≤8 字,与 psyche 锚词同尺)
+SNARK_TEMP_BOOST = 0.15           # 顶嘴时温度略升(话更冲;护栏三层照跑)
+NIGHT_EGG_HOUR = 23               # 深夜彩蛋(设计原案 loading_family_memory.dump):23 点后
+NIGHT_EGG_P = 0.15                # 低概率(日种子确定性抽签,幂等 per date)
+
+# ── :可见成长()────────────────────────────────────
+TREASURE_STAGES = ("toddler", "child", "teen", "adult")   # 宝贝盒立卡阶段
+TREASURE_TOP_N = 5                # 宝贝盒:词块索引 top N=「他的宝贝」(纯派生,零新表)
+TREASURE_MIN_CHUNKS = 3           # 索引至少 N 条才立卡(词太少不成盒)
+NOTEBOOK_WINDOW_H = 48.0          # 小本子:最近 ok 决策的新鲜窗(超窗=不发,不翻旧账)
+NOTEBOOK_MAX_WORDS = 3            # 只抄锚词前 N 个(安全字段;绝不贴 DS 原文/裸数值)
+
+# ── :真实语料魔法四件(,设计总纲 )────────────────────
+# 内容优先真实语料生成(总纲3)。全部低频/确定性日抽签((child,date) 种子)/
+# 幂等/fail-open——任何一件坏了绝不炸 tick。频率为几何分布均值口径(每天独立抽签)。
+TIMETRAVEL_DAY_P = 0.15           # 时空穿越提问:≈每 6-7 天一次
+TIMETRAVEL_STAGES = ("child", "teen", "adult")   # 能问出完整日期问题的年纪
+MISTRANSLATE_DAY_P = 0.12         # 温柔的误译:≈每 8 天一次
+MISTRANSLATE_STAGES = ("toddler", "child", "teen", "adult")   # 婴儿还复述不了道理
+MISTRANSLATE_MIN_LEN = 12         # 锚源片段长度下限(随机+长度过滤,不做情感判定)
+MAGIC_EVENT_HOURS = (9, 21)       # 白天事发时刻窗(与每日事件同口径)
+STORY_NIGHT_START_H = 19          # 睡前故事窗起点:19:00-次日07:00 的 book 语料算「昨晚讲的」
+STORY_MORNING_H = 7               # 次日 07:00 后才复述(睡一觉才变成自己的)
+GIFT_EVENT_KEYS = frozenset({"stone"})   # 每日事件池「捡东西给你」类(扩池时登记新键)
+
+# ── :生病 arc(,设计总纲 )────────────────────────
+# 低频全期「被需要」回归:确定性抽签开 2 天病窗,窗内解码扰动+夜里叫一次人
+# (婴儿期外也叫=设计点)+feed/soothe 有「照顾」psyche 加成,窗关自动痊愈。
+SICKNESS_DAY_P = 0.2              # 最小间隔过后的每日抽签概率:间隔均值≈gap+5≈12 天
+SICKNESS_MIN_GAP_DAYS = 7.0       # 距上次开病窗的最小间隔(天)
+SICKNESS_DURATION_H = 48.0        # 一段病程 2 天
+SICK_ONSET_HOURS = (8, 20)        # 发病时刻窗(本地时)
+SICK_CRY_HOURS = (3, 6)           # 病中夜叫窗 03:00-06:00(比夜哭窗宽,复用其排班纪律)
+SICK_CRY_EXPIRES_H = 7            # 当日 07:00 过期即弃(夜里的难受不上午补播)
+SICK_SPEAK_TEMP_BOOST = 0.25      # 病中解码扰动(参照 digest overload 路子):温度升
+SICK_SPEAK_LEN_CUT = 0.3          # 句长缩
+SICK_SPEAK_REDUP_BOOST = 0.2     # 叠词回升(瓮声瓮气,话说不利索)
+SICK_CARE_KINDS = ("feed", "soothe",   # 病窗内「照顾」动作(psyche 加成;每病日每类一次)
+                   "mama_hug", "mama_soothe", "mama_touch")   # 妈妈的照顾也算数
+SICK_CARE_BONUS = dict(anxiety=-2.5, esteem=+0.5)   # 难受时有人来=不安-被在乎+
+
+
+# ── 动作 kind 权威全集(接入层镜像同步闸)──────────────────────
+# 单一权威源:引擎全部 action_log kind。前端 design-base lib/cradleKinds 的
+# actionLine 表镜像此集——**加新 kind 必进此集**,绊线测试(test_action_kind_registry)
+# 会红;红了就同步去改前端表(它测的是快照,这边才是真相)。
+ACTION_KINDS_ALL = frozenset({
+    # 主照护人动词
+    "feed", "soothe", "diaper", "burp", "play", "talk", "teach", "discipline",
+    # 系统/机制
+    "overhear", "neglect", "homecoming", "left_alone",
+    "ask_answered", "ask_missed", "choice_missed",
+    # 妈妈通道
+    "mama_hug", "mama_soothe", "mama_touch", "mama_say",
+    # 选择题(题面选项+拍板语料壳+超时)
+    "choice_say", "choice_scold", "choice_laugh", "choice_keep", "choice_refuse",
+    "choice_indulge", "choice_settle", "choice_swear_left",
+    # 事件链分支账
+    "arc_friend_good", "arc_friend_bad", "arc_contest_good", "arc_contest_bad",
+    # 结局日
+    "farewell", "stay",
+})

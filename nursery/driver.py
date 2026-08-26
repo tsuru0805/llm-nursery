@@ -17,6 +17,10 @@ argv 形态:
                                 建档。名字可现在给(提前想好的),也可留空——
                                 出生后用 name 指令定,或让孩子一起挑;
                                 --embryo=占位胚胎,日后不带 --embryo 再跑一次=孵化
+- --pause / --resume <persona>   冻龄/解冻(管理面,不进阶段解锁表)。
+                                冻龄=逻辑年龄停走,状态/事件/说话照常
+- --set-policy <persona> <ver>   阶段表升版(显式迁移;config 头注红线:
+                                不许悄悄重写既有孩子年龄。只升不降)
 
 路径 env 覆盖(测试红线:真实 saves/ 永不当测试默认值):NURSERY_SAVES_DIR。
 偷学源 env:NURSERY_ARCHIVE_DB(语料存档路径,只读硬闸与 schema 约定在 sampler)。
@@ -51,7 +55,7 @@ MAX_NAME_LEN = 6     # 单个名字候选上限(字)
 
 # ── 妈妈通道(第二照护人的互动;主照护人指令白名单里没有 mama)──
 MAMA_ACTOR = "mama"        # action_log.actor / corpus_item.speaker 同口径
-MAMA_SUBCMDS = frozenset({"hug", "soothe", "touch", "say"})
+MAMA_SUBCMDS = frozenset({"hug", "soothe", "touch", "say", "choose"})
 MAX_MAMA_SAY_LEN = 500     # 说给他听正文上限(接入层同值)
 
 # 动作解锁表:阶段 gate(成长的仪式感;越阶调用给打趣文案不报错)。
@@ -60,12 +64,13 @@ STAGE_ACTIONS = {
     "infant":  {"status", "feed", "soothe", "diaper", "burp", "describe",
                 "album", "log", "help"},
     "toddler": {"status", "feed", "soothe", "diaper", "burp", "play", "teach",
-                "describe", "album", "log", "help"},
+                "describe", "album", "log", "help", "choose"},
     "child":   {"status", "feed", "soothe", "play", "teach", "talk", "discipline",
-                "describe", "album", "log", "help"},
+                "describe", "album", "log", "help", "choose"},
     "teen":    {"status", "feed", "talk", "discipline", "describe",
-                "album", "log", "help"},
-    "adult":   {"status", "talk", "describe", "album", "log", "help"},
+                "album", "log", "help", "choose"},
+    "adult":   {"status", "talk", "describe", "album", "log", "help", "choose",
+                "farewell", "stay"},   # 结局日:说再见/再等一天
 }
 MAX_DESCRIBE_LEN = 300
 
@@ -151,6 +156,18 @@ def _mama_dispatch(conn, child, argv: list, t: float) -> str:
         res = child_mod.child_speak(conn, brain, cid, trigger="mama_say", now=t)
         return out(True, action="say", duplicate=False, fed=r["fed"],
                    said=None if res.refused else res.text)
+
+    if sub == "choose":
+        # 两难妈妈也能拍,谁先拍算谁的。
+        from .choices import resolve_choice
+        if len(argv) < 3 or not argv[1].isdigit() or \
+                argv[2].lower() not in ("a", "b"):
+            return out(False, error="bad_args")
+        r = resolve_choice(conn, brain, cid, int(argv[1]), argv[2].lower(),
+                           now=t, actor=MAMA_ACTOR)
+        if r["status"] != "ok":
+            return out(False, error=r["status"])
+        return out(True, action="choose", line=r.get("line"), said=r.get("said"))
 
     kind = f"mama_{sub}"
     child_mod.apply_action(conn, cid, MAMA_ACTOR, kind,
@@ -290,6 +307,15 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
         if mama:
             lines.append(texts.STATUS_MAMA_SAID +
                          " / ".join(f"「{r['text']}」" for r in mama))
+        # 宝贝盒:词块索引纯派生的「他的宝贝」(索引空/故障=整行不出)
+        try:
+            from .visible_growth import treasure_list
+            tr = treasure_list(conn, cid, top_n=3)
+            if tr:
+                lines.append(texts.STATUS_TREASURES +
+                             "、".join(f"「{w}」" for w in tr))
+        except Exception:
+            pass
         # 消化过载提示
         s_now = child_mod.read_state(conn, cid, now=t, persist=False)
         if t >= child_mod._rules_v2_since(conn, cid) and \
@@ -351,6 +377,48 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
                     f"{_render_state(conn, cid, t)}")
         return f"{verb}。\n{_speak_line(res, name)}\n{_render_state(conn, cid, t)}"
 
+    if cmd in ("farewell", "stay"):
+        # 结局日(M11):告别门开着才有意义,但指令本身幂等安全——
+        # farewell 落账后由 judge_ending(下一拍或就地)判结局;stay=再陪一天,
+        # 当天他只说那一句(child_speak 路)。
+        gate = conn.execute(
+            "SELECT 1 FROM growth_album WHERE child_id=? AND item_kind="
+            "'farewell_gate' LIMIT 1", (cid,)).fetchone()
+        if gate is None:
+            return f"{name}还没到要说再见的时候。"
+        child_mod.apply_action(conn, cid, PLAYER_DIR[persona], cmd,
+                               idempotency_key=_idem(cmd, t), now=t)
+        if cmd == "stay":
+            # 台词走 child_speak 留痕(评审阻断:界面词与 utterance 同源)
+            res = child_mod.child_speak(conn, brain, cid, trigger="stay", now=t)
+            return f"{texts.FAREWELL_STAY_REPLY}\n「{res.text}」"
+        from .events import judge_ending
+        ending = judge_ending(conn, brain, cid, now=t)
+        tail = f"(结局:{ending})" if ending else ""
+        return f"{texts.FAREWELL_GO_REPLY}{tail}"
+
+    if cmd == "choose":
+        # :两难拍板(父母专属,叔叔在上面 UNCLE_BLOCKED 已拦)。
+        # 编号=事件里带的 choice_id;后果真实落账,选完不能反悔。
+        from .choices import resolve_choice
+        parts = rest.split()
+        if len(parts) != 2 or not parts[0].isdigit() or \
+                parts[1].lower() not in ("a", "b"):
+            return texts.CHOICE_USAGE
+        r = resolve_choice(conn, brain, cid, int(parts[0]), parts[1].lower(),
+                           now=t)
+        if r["status"] == "not_found":
+            return "没有这件事的编号。他没来问过,或者编号敲错了。"
+        if r["status"] == "expired":
+            return texts.CHOICE_EXPIRED_LINE
+        if r["status"] == "already":
+            return texts.CHOICE_ALREADY_LINE
+        lines = [r["line"]] if r["line"] else []
+        if r["said"]:
+            lines.append(f"{name}:「{r['said']}」")
+        lines.append(_render_state(conn, cid, t))
+        return "\n".join(lines)
+
     if cmd == "album":
         rows = conn.execute(
             "SELECT title, note FROM growth_album WHERE child_id=?"
@@ -406,6 +474,93 @@ def init_birth(persona: str, name: str | None, now: float | None = None,
             fcntl.flock(lk, fcntl.LOCK_UN)
 
 
+def admin_freeze(persona: str, *, resume: bool = False,
+                 now: float | None = None) -> str:
+    """冻龄/解冻(管理面):对该 persona 库里的孩子操作,单行 JSON 回执。
+
+    与 run() 同级 flock;无档=no_child;embryo 拒绝(pause_child 内闸)。"""
+    sub = PLAYER_DIR[persona]
+    db_path = _db_path(sub)
+    lock_path = os.path.join(os.path.dirname(db_path), ".lock")
+    with open(lock_path, "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            conn = pdb.connect(db_path)
+            try:
+                row = conn.execute("SELECT child_id FROM child LIMIT 1").fetchone()
+                if row is None:
+                    return json.dumps({"error": "no_child"}, ensure_ascii=False)
+                fn = child_mod.resume_child if resume else child_mod.pause_child
+                try:
+                    res = fn(conn, row["child_id"], now=now)
+                except ValueError as e:
+                    return json.dumps({"error": str(e)}, ensure_ascii=False)
+                return json.dumps({"child_id": row["child_id"], **res},
+                                  ensure_ascii=False)
+            finally:
+                conn.close()
+        finally:
+            fcntl.flock(lk, fcntl.LOCK_UN)
+
+
+def admin_set_policy(persona: str, version: int,
+                     now: float | None = None) -> str:
+    """阶段表升版(管理面,单行 JSON 回执)。未知版号拒绝;幂等。
+
+    老档升级路径:老孩子钉在建档时的 policy 不悄改人生进度;想给他续
+    (如 teen 36→48)= 玩家显式跑这条。只升不降;倒龄守卫拒绝会让他
+    从更大阶段退回更小阶段的升版(阶段史不倒序)。"""
+    if version not in cfg.STAGE_SCHEDULES:
+        return json.dumps({"error": f"unknown_policy:{version}"}, ensure_ascii=False)
+    sub = PLAYER_DIR[persona]
+    db_path = _db_path(sub)
+    lock_path = os.path.join(os.path.dirname(db_path), ".lock")
+    with open(lock_path, "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            conn = pdb.connect(db_path)
+            try:
+                row = conn.execute("SELECT child_id, stage_policy_version"
+                                   " FROM child LIMIT 1").fetchone()
+                if row is None:
+                    return json.dumps({"error": "no_child"}, ensure_ascii=False)
+                if row["stage_policy_version"] == version:
+                    return json.dumps({"child_id": row["child_id"],
+                                       "policy": version, "already": True},
+                                      ensure_ascii=False)
+                if version < row["stage_policy_version"]:
+                    # 单向升版(降版=回头重写年龄语义,不开这个口)
+                    return json.dumps({"error": "downgrade_forbidden"},
+                                      ensure_ascii=False)
+                child = child_mod.get_child(conn, row["child_id"])
+                if child["status"] == "graduated":
+                    return json.dumps({"error": "graduated_locked"},
+                                      ensure_ascii=False)
+                if child["born_at"] is not None:
+                    # 倒龄守卫:升版不许让他从更大的阶段退回更小的(阶段史不倒序)
+                    t0 = child_mod._now(now)
+                    names = [n for n, _ in cfg.STAGE_SCHEDULES[version]]
+                    cur = child_mod.stage_of(child, t0)
+                    probe = dict(child)      # sqlite3.Row → dict,同键取值
+                    probe["stage_policy_version"] = version
+                    new_stage = child_mod.stage_of(probe, t0)
+                    if cur in names and names.index(new_stage) < names.index(cur):
+                        return json.dumps({"error": "stage_would_regress",
+                                           "from": cur, "to": new_stage},
+                                          ensure_ascii=False)
+                with child_mod.tx(conn):
+                    conn.execute(
+                        "UPDATE child SET stage_policy_version=?, updated_at=?"
+                        " WHERE child_id=?",
+                        (version, child_mod._now(now), row["child_id"]))
+                return json.dumps({"child_id": row["child_id"], "policy": version,
+                                   "already": False}, ensure_ascii=False)
+            finally:
+                conn.close()
+        finally:
+            fcntl.flock(lk, fcntl.LOCK_UN)
+
+
 def run(persona: str, cmd_argv: list, now: float | None = None) -> str:
     """同进程直接入口(测试用;仍走 flock)。"""
     sub = PLAYER_DIR.get(persona)
@@ -443,9 +598,22 @@ def main(argv: list) -> int:
             return 2
         print(init_birth(rest[0], rest[1] if len(rest) > 1 else None, embryo=embryo))
         return 0
+    if argv and argv[0] == "--set-policy":
+        if len(argv) < 3 or argv[1] not in PLAYER_DIR or not argv[2].isdigit():
+            print("usage: --set-policy <persona> <ver>")
+            return 2
+        print(admin_set_policy(argv[1], int(argv[2])))
+        return 0
+    if argv and argv[0] in ("--pause", "--resume"):
+        if len(argv) < 2 or argv[1] not in PLAYER_DIR:
+            print(f"usage: {argv[0]} <persona>")
+            return 2
+        print(admin_freeze(argv[1], resume=(argv[0] == "--resume")))
+        return 0
     if len(argv) < 1 or argv[0] not in PLAYER_DIR:
         print("usage: <persona> <cmd> [args...] | --tick |"
-              " --init-birth <persona> [名字] [--embryo]")
+              " --init-birth <persona> [名字] [--embryo] |"
+              " --pause/--resume <persona> | --set-policy <persona> <ver>")
         return 2
     print(run(argv[0], argv[1:]))
     return 0

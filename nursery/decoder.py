@@ -9,7 +9,9 @@ import random
 from dataclasses import dataclass
 
 from .config import (DIGEST_SPEAK_LEN_CUT, DIGEST_SPEAK_REDUP_BOOST,
-                     DIGEST_SPEAK_TEMP_BOOST, PSYCHE_ANCHOR_BOOST, STAGE_DECODE_V1)
+                     DIGEST_SPEAK_TEMP_BOOST, PSYCHE_ANCHOR_BOOST,
+                     SICK_SPEAK_LEN_CUT, SICK_SPEAK_REDUP_BOOST,
+                     SICK_SPEAK_TEMP_BOOST, SNARK_TEMP_BOOST, STAGE_DECODE_V1)
 from .guard import OverlapGuard
 from .model import LINE_BOUND, VariableOrderMarkov
 from .texts import FALLBACK_BABBLE   # 护栏全拒兜底(文案层;此处 re-export)
@@ -33,7 +35,8 @@ def speak(model: VariableOrderMarkov, guard: OverlapGuard, stage: str,
           rng: random.Random, recent_texts: list[str] | None = None,
           seed: str = "", refuse_p: float = 0.0,
           anchor_words: list[str] | None = None,
-          overload: float = 0.0, chunk: str | None = None) -> SpeakResult:
+          overload: float = 0.0, chunk: str | None = None,
+          snark: bool = False, sick: bool = False) -> SpeakResult:
     """seed=锚词起头继续说(语出惊人用);refuse_p=已读不回概率(teen 黑暗值驱动);
     anchor_words=psyche 决策锚词:锚词字符采样权重 ×PSYCHE_ANCHOR_BOOST 的
     **软偏置**——只影响采样偏好,护栏三层原封不动(过不了 guard 照样拒);
@@ -42,8 +45,20 @@ def speak(model: VariableOrderMarkov, guard: OverlapGuard, stage: str,
     与锚词同款软通道,护栏与词汇解锁照跑;0=原行为。同样进 params 留痕。
     chunk=家庭词块整词起头:等价 seed(显式 seed 优先,语出惊人不受扰),
     **词块字符必须全在词汇解锁集内**,否则本次不整词(seed 直进输出,不设闸
-    =绕过 vocab_ratio);进 params 留痕。"""
+    =绕过 vocab_ratio);进 params 留痕。
+    snark=顶嘴拧话:温度略升(+SNARK_TEMP_BOOST)+params 标 snark 留痕;
+    锚词由调用方换成父母最近 direct 语料的词——同锚词软通道,护栏与词汇解锁照跑。
+    sick=病窗解码扰动:温度升/句长缩/叠词回升(瓮声瓮气话说不利索),
+    与 overload/snark 同款软通道可叠加,护栏与词汇解锁照跑;进 params 留痕。"""
     p = STAGE_DECODE_V1[stage]
+    if snark:
+        p = dict(p, temperature=p["temperature"] + SNARK_TEMP_BOOST, snark=True)
+    if sick:
+        p = dict(p,
+                 temperature=p["temperature"] + SICK_SPEAK_TEMP_BOOST,
+                 max_len=max(p["min_len"], int(p["max_len"] * (1 - SICK_SPEAK_LEN_CUT))),
+                 reduplicate_p=min(0.9, p["reduplicate_p"] + SICK_SPEAK_REDUP_BOOST),
+                 sick=True)
     if overload and overload > 0:
         ov = min(1.0, max(0.0, float(overload)))
         p = dict(p,

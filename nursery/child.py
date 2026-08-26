@@ -187,14 +187,60 @@ def logical_age_days(child: sqlite3.Row, now: float | None = None) -> float:
     return max(0.0, (t - child["born_at"] - paused)) / 86400.0
 
 
+def stage_schedule_for(child: sqlite3.Row) -> list:
+    """孩子自己的阶段表(stage_policy_version 查注册表)。未知版=fail closed
+    炸响(评审)。"""
+    ver = child["stage_policy_version"]
+    schedule = cfg.STAGE_SCHEDULES.get(ver)
+    if schedule is None:
+        raise ValueError(f"未知 stage_policy_version={ver}(坏档或代码降级)")
+    return schedule
+
+
 def stage_of(child: sqlite3.Row, now: float | None = None) -> str:
     if child["status"] == "embryo":
         return "embryo"
     age = logical_age_days(child, now)
-    for stage, upper in STAGE_SCHEDULE_V1:
+    schedule = stage_schedule_for(child)
+    for stage, upper in schedule:
         if age < upper:
             return stage
-    return STAGE_SCHEDULE_V1[-1][0]
+    return schedule[-1][0]
+
+
+def pause_child(conn: sqlite3.Connection, child_id: str,
+                now: float | None = None) -> dict:
+    """冻龄:落 paused_at,逻辑年龄停走(阶段/结局判定随之冻结)。
+
+    状态/事件/说话照常——他还活着,只是不长大。幂等:已冻返回原冻结时刻。
+    embryo 无年龄可冻,直接拒绝。"""
+    t = _now(now)
+    with tx(conn):
+        child = get_child(conn, child_id)
+        if child["born_at"] is None:
+            raise ValueError("embryo 没有年龄可冻")
+        if child["paused_at"] is not None:
+            return {"paused": True, "paused_at": child["paused_at"], "already": True}
+        conn.execute("UPDATE child SET paused_at=?, updated_at=? WHERE child_id=?",
+                     (t, t, child_id))
+    return {"paused": True, "paused_at": t, "already": False}
+
+
+def resume_child(conn: sqlite3.Connection, child_id: str,
+                 now: float | None = None) -> dict:
+    """解冻:停走秒数并入 total_paused_seconds 后清 paused_at。幂等:未冻空转。"""
+    t = _now(now)
+    with tx(conn):
+        child = get_child(conn, child_id)
+        if child["paused_at"] is None:
+            return {"paused": False, "already": True,
+                    "total_paused_seconds": child["total_paused_seconds"] or 0.0}
+        total = (child["total_paused_seconds"] or 0.0) + \
+            max(0.0, t - child["paused_at"])
+        conn.execute(
+            "UPDATE child SET paused_at=NULL, total_paused_seconds=?, updated_at=?"
+            " WHERE child_id=?", (total, t, child_id))
+    return {"paused": False, "already": False, "total_paused_seconds": total}
 
 
 # ────────────────────────── 状态机(读时惰性结算,固定步长积分) ──────────────────────────
@@ -228,6 +274,9 @@ def _settle_step(s: dict, dt: float, abs_t: float | None = None) -> None:
         s["darkness"] = _clamp(s["darkness"] - DARKNESS_HEAL_PER_H * dt)  # 缓慢自愈
     if "digest_load" in s:
         s["digest_load"] = _clamp(s["digest_load"] - _digest_decay_rate(abs_t) * dt)
+    if "annoyance" in s:
+        # 摩擦轴:自然时衰(照 darkness 形制,但快得多——气几天就淡)
+        s["annoyance"] = _clamp(s["annoyance"] - cfg.ANNOY_HEAL_PER_H * dt)
 
 
 def _secs_to_night_boundary(abs_t: float) -> float:
@@ -268,17 +317,17 @@ def _read_state_locked(conn: sqlite3.Connection, child_id: str, t: float,
     if row is None:
         raise KeyError(f"child_state {child_id} 不存在(embryo 无状态)")
     state = {k: row[k] for k in ("mood", "health", "intimacy", "nutrition", "fatigue",
-                                 "darkness", "digest_load")}
+                                 "darkness", "digest_load", "annoyance")}
     hours = (t - row["last_settled_at"]) / 3600.0
     settled = settle_state(state, hours, start=row["last_settled_at"])
     if persist and hours > 0.01:
         conn.execute(
             "UPDATE child_state SET mood=?, health=?, intimacy=?, nutrition=?,"
-            " fatigue=?, darkness=?, digest_load=?, last_settled_at=?, updated_at=?"
-            " WHERE child_id=?",
+            " fatigue=?, darkness=?, digest_load=?, annoyance=?, last_settled_at=?,"
+            " updated_at=? WHERE child_id=?",
             (settled["mood"], settled["health"], settled["intimacy"],
              settled["nutrition"], settled["fatigue"], settled["darkness"],
-             settled["digest_load"], t, t, child_id))
+             settled["digest_load"], settled["annoyance"], t, t, child_id))
     return settled
 
 
@@ -361,6 +410,47 @@ def _apply_action_locked(conn: sqlite3.Connection, child_id: str, actor: str, ki
     if factor != 1.0:
         # 递减动作集不含营养/负荷键(feed/mama_say 走语料线,不在集内),整表同乘
         effects = {k: v * factor for k, v in effects.items()}
+
+    # ── 摩擦轴 annoyance(青春期专修;总纲④:摩擦从正常生活长出来,
+    # 独立于黑暗值——darkness 的虐待线语义上面一个字没动)。放在 factor 之后:
+    # 唠叨/台阶都是全额账,不吃当日递减。──
+    olive = False
+    if kind in cfg.ANNOY_NAG_KINDS or kind in cfg.ANNOY_OLIVE_KINDS:
+        # 闸收编进 friction.annoy_stage(函数级 import 防环,
+        # sickness 同例);台阶消解不折减,唠叨账按 ANNOY_STAGE_SCALE 折
+        from .friction import annoy_stage as _annoy_stage
+        stage29 = _annoy_stage(get_child(conn, child_id), t)
+        if stage29 is not None:
+            if kind in cfg.ANNOY_OLIVE_KINDS and \
+                    state.get("annoyance", 0.0) >= cfg.ANNOY_OLIVE_MIN:
+                # 给台阶:他烦到高位时你认真来哄/谈心=大幅消解+和解事件
+                # (每日至多一次,幂等键 olive:{date};outbox 直插,
+                # attempt_homecoming 同形制——_emit 自开事务进不来这里)
+                olive = True
+                effects["annoyance"] = effects.get("annoyance", 0.0) - \
+                    cfg.ANNOY_OLIVE_DROP
+                date29 = time.strftime("%Y-%m-%d", time.localtime(t))
+                from . import texts as _tx29
+                olive_idem = f"olive:{date29}:{child_id}"
+                conn.execute(
+                    "INSERT OR IGNORE INTO outbox(child_id, target, kind,"
+                    " payload_json, status, next_attempt_at, expires_at,"
+                    " idempotency_key) VALUES(?,?,?,?,'pending',?,?,?)",
+                    (child_id, "webhook", "nursery.event",
+                     json.dumps({"kind": "nursery.event",
+                                 "title": _tx29.OLIVE_EVENT, "note": None,
+                                 "friction": "olive_branch", "ts": t,
+                                 "source_event_id": olive_idem},
+                                ensure_ascii=False), t, t + 86400, olive_idem))
+            elif kind in cfg.ANNOY_NAG_KINDS:
+                # 唠叨:当日同类超过免费额的部分才涨(复用 _daily_repeat_count,
+                # 与同口径:不含本次,同秒已提交计入)
+                n29 = _daily_repeat_count(conn, child_id, kind, t)
+                if n29 >= cfg.ANNOY_NAG_FREE:
+                    effects["annoyance"] = effects.get("annoyance", 0.0) + \
+                        cfg.ANNOY_NAG_STEP * \
+                        cfg.ANNOY_STAGE_SCALE.get(stage29, 1.0)
+
     after = dict(state)
     for k, v in effects.items():
         after[k] = _clamp(after.get(k, 0.0) + v)
@@ -382,18 +472,21 @@ def _apply_action_locked(conn: sqlite3.Connection, child_id: str, actor: str, ki
         record["decay_factor"] = round(factor, 4)
     if calm:
         record["calm_soothe"] = True
+    if olive:
+        record["olive_branch"] = True   # 摩擦轴:这次是「给台阶」(留痕可审计)
     if bnd:
         record["bond"] = bnd
     if psy:
         record["psyche"] = psy
     conn.execute(
         "UPDATE child_state SET mood=?, health=?, intimacy=?, nutrition=?, fatigue=?,"
-        " darkness=?, digest_load=?, last_settled_at=?, last_interaction_at=?,"
+        " darkness=?, digest_load=?, annoyance=?, last_settled_at=?,"
+        " last_interaction_at=?,"
         " last_fed_at=CASE WHEN ?='feed' THEN ? ELSE last_fed_at END,"
         " updated_at=? WHERE child_id=?",
         (after["mood"], after["health"], after["intimacy"], after["nutrition"],
          after["fatigue"], after["darkness"], after["digest_load"],
-         t, t, kind, t, t, child_id))
+         after["annoyance"], t, t, kind, t, t, child_id))
     conn.execute(
         "UPDATE child SET state_version=?, updated_at=? WHERE child_id=?",
         (ver + 1, t, child_id))
@@ -649,6 +742,29 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
             if child["status"] == "graduated":
                 raise ValueError("graduated")  # 已毕业,摇篮房不再出声
             stage = stage_of(child, t)
+            # 结局日(M11):「再等一天」窗内他一整天只说那一句。
+            # 定稿句直出:不走生成不耗 rng(rng_state 不动),utterance 照留痕。
+            if stage == "adult":
+                stay = conn.execute(
+                    "SELECT 1 FROM action_log WHERE child_id=? AND kind='stay'"
+                    " AND effective_at>? LIMIT 1",
+                    (child_id, t - cfg.STAY_LINE_HOURS * 3600)).fetchone()
+                if stay is not None:
+                    from .texts import STAY_LINE
+                    res = SpeakResult(text=STAY_LINE, retries=0, max_overlap=0,
+                                      accepted=True, stage=stage,
+                                      params={"stay_day": True})
+                    # model_snapshot_id=NULL:这句是定稿不是模型输出——
+                    # 「utterance 恒指真实模型」纪律靠不冒充满足(直出在
+                    # catch-up 前,挂旧 snapshot_id 会指错模型)。
+                    conn.execute(
+                        "INSERT INTO utterance(child_id, trigger,"
+                        " model_snapshot_id, stage, text, generation_params_json,"
+                        " max_source_overlap, accepted, rejection_reason,"
+                        " created_at) VALUES(?,?,NULL,?,?,?,?,1,NULL,?)",
+                        (child_id, trigger, stage, res.text,
+                         json.dumps(res.params), 0, t))
+                    return res  # tx 上下文正常退出即提交
             brain._replay_after_cursor(conn)
             if brain.snapshot_id is None or brain.trained_through != brain.snapshot_cursor:
                 # 当前模型游标 ≠ 快照游标(catch-up 或 load 走了旧快照+重放):
@@ -666,6 +782,11 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
             refuse_p = 0.0
             if stage == "teen":
                 refuse_p = (st_now.get("darkness", 0.0) / 100.0) * ATTITUDE_REFUSE_MAX_P
+                # 摩擦轴(唯一允许的行为改动):已读不回改吃 max(黑暗值路, 摩擦轴路)。
+                # darkness 语义不动(虐待线);好好带娃 darkness 恒 0 时,
+                # 正常生活攒的摩擦也能让他不理你(总纲④)。
+                refuse_p = max(refuse_p, (st_now.get("annoyance", 0.0) / 100.0) *
+                               cfg.ANNOY_REFUSE_MAX_P)
             # 消化过载 → 出口碎化比例(超过阈值的部分线性到 1)
             overload = 0.0
             if t >= _rules_v2_since(conn, child_id):
@@ -673,6 +794,13 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
                 if d > cfg.DIGEST_OVERLOAD_AT:
                     overload = min(1.0, (d - cfg.DIGEST_OVERLOAD_AT) /
                                    max(1.0, 100.0 - cfg.DIGEST_OVERLOAD_AT))
+            # 病窗解码扰动:单条 indexed 查询(idx_sched_child_kind),
+            # fail-open——查询坏了当没病,绝不拦嘴(sickness 挂热路径的唯一开销)
+            try:
+                from .sickness import open_sickness_date
+                sick = open_sickness_date(conn, child_id, t) is not None
+            except Exception:
+                sick = False
 
             recent = [r["text"] for r in conn.execute(
                 "SELECT text FROM utterance WHERE child_id=? AND accepted=1"
@@ -683,6 +811,20 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
                 anchors = latest_anchor_words(conn, child_id, t)
             except Exception:
                 anchors = None
+            # 摩擦轴顶嘴拧话(snark):teen 摩擦高位时,锚词偏置换成「父母最近
+            # direct 语料的词拧着用」+温度略升(decoder snark 通道)。纯派生
+            # 确定性取词,不耗 rng(不动既有确定性序列);fail-open——取不出/
+            # 任何故障=锚词照旧。utterance params 标 snark 留痕。
+            snark = False
+            if stage == "teen" and \
+                    st_now.get("annoyance", 0.0) >= cfg.ANNOY_SNARK_MIN:
+                try:
+                    from .friction import recent_direct_anchors
+                    sa = recent_direct_anchors(conn, child_id)
+                except Exception:
+                    sa = None
+                if sa:
+                    anchors, snark = sa, True
             # 家庭词块:按阶段概率整词起头(婴儿=0);场景倾向随触发源;
             # 索引空/任何故障=不起头照旧(fail-open)。确定性口径:同 rng_state+
             # 同索引内容 ⇒ 同结果;p=0 不抽签不耗 rng。
@@ -697,7 +839,8 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
                     chunk = None
             result = speak(brain.model, brain.guard, stage, rng,
                            recent_texts=recent, refuse_p=refuse_p,
-                           anchor_words=anchors, overload=overload, chunk=chunk)
+                           anchor_words=anchors, overload=overload, chunk=chunk,
+                           snark=snark, sick=sick)
 
             conn.execute(
                 "INSERT INTO utterance(child_id, trigger, model_snapshot_id, stage, text,"

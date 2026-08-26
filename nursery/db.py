@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlite3
 import time
 
-SCHEMA_VERSION = 8   # v2: outbox.expires_at;v3: darkness 等;v4: appearance;v5: psyche 三表;v6: digest_load;v7: scene+chunk_index+parenting_meta;v8: caregiver_bond 两表
+SCHEMA_VERSION = 11  # v2: outbox.expires_at;v3: darkness 等;v4: appearance;v5: psyche 三表;v6: digest_load;v7: scene+chunk_index+parenting_meta;v8: caregiver_bond 两表;v9: annoyance 摩擦轴;v10: 小本子时间窗索引;v11: scheduled_event(child,kind,status) 索引(sickness 开窗挂 child_speak 热路径)
 
 # ── v5(LLM 心理层)三表 DDL:_SCHEMA(新库)与迁移(旧库)共用同一权威源 ──
 # psyche_axis      = 三轴当前值(不安/独立/自尊,0-100;黑暗值仍在 child_state,DS 只读不写)
@@ -108,6 +108,10 @@ _PSYCHE_DDL = [
 )""",
     """CREATE INDEX IF NOT EXISTS idx_psyche_dec_child
     ON psyche_decision(child_id, id)""",
+    # v10(小本子):时间窗读口按 (child_id, created_at, id) 走索引,
+    # ORDER BY created_at DESC, id DESC 免 temp b-tree 全量排序
+    """CREATE INDEX IF NOT EXISTS idx_psyche_dec_child_time
+    ON psyche_decision(child_id, created_at, id)""",
 ]
 
 _SCHEMA = """
@@ -137,6 +141,7 @@ CREATE TABLE IF NOT EXISTS child_state (
     nutrition  REAL NOT NULL, fatigue REAL NOT NULL,
     darkness   REAL NOT NULL DEFAULT 0,      -- v3 黑暗值(火山的女儿式叛逆量表,0-100)
     digest_load REAL NOT NULL DEFAULT 0,     -- v6 消化负荷(听进去的话要消化,0-100)
+    annoyance  REAL NOT NULL DEFAULT 0,      -- v9 摩擦轴(唠叨/被晾攒的烦,独立于黑暗值,0-100)
     last_settled_at    REAL NOT NULL,
     last_fed_at        REAL,
     last_interaction_at REAL,
@@ -218,6 +223,8 @@ CREATE TABLE IF NOT EXISTS scheduled_event (          -- 调度用,schema 一次
     idempotency_key TEXT NOT NULL,
     UNIQUE(child_id, idempotency_key)
 );
+CREATE INDEX IF NOT EXISTS idx_sched_child_kind
+    ON scheduled_event(child_id, kind, status);
 
 CREATE TABLE IF NOT EXISTS outbox (                   -- 至少一次投递+对端幂等去重
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -301,6 +308,32 @@ def connect(db_path: str) -> sqlite3.Connection:
                         "INSERT OR IGNORE INTO parenting_meta(child_id, key,"
                         " value, updated_at) VALUES(?,?,?,?)",
                         (r["child_id"], "rules_v2_since", repr(t0), t0))
+            if ver < 9:
+                # 摩擦轴:老档 backfill 0(他还没攒过烦)——不追溯,升级前的
+                # 唠叨/晾着不进新账;同时按孩子钉 rules_v3_since 时刻戳
+                # (child._rules_v3_since 读),v0.3 新记账机制只从升级时刻起算。
+                # 列存在即跳过(幂等:部分新建库/半截迁移重入都不炸)
+                cols = {r[1] for r in conn.execute(
+                    "PRAGMA table_info(child_state)").fetchall()}
+                if "annoyance" not in cols:
+                    conn.execute("ALTER TABLE child_state ADD COLUMN annoyance"
+                                 " REAL NOT NULL DEFAULT 0")
+                t3 = time.time()
+                for r in conn.execute("SELECT child_id FROM child").fetchall():
+                    conn.execute(
+                        "INSERT OR IGNORE INTO parenting_meta(child_id, key,"
+                        " value, updated_at) VALUES(?,?,?,?)",
+                        (r["child_id"], "rules_v3_since", repr(t3), t3))
+            if ver < 10:
+                # 小本子时间窗索引(IF NOT EXISTS:v5 前老库经 _PSYCHE_DDL
+                # 已建过=幂等跳过)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_psyche_dec_child_time"
+                    " ON psyche_decision(child_id, created_at, id)")
+            if ver < 11:
+                # sickness 开窗查询挂 child_speak 热路径的索引
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_sched_child_kind"
+                             " ON scheduled_event(child_id, kind, status)")
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.commit()
         except BaseException:

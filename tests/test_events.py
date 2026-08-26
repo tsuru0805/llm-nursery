@@ -33,6 +33,8 @@ def born(saves):
     driver.init_birth("papa", "孩子", now=T0)
     conn = pdb.connect(driver._db_path("papa"))
     cid = conn.execute("SELECT child_id FROM child").fetchone()["child_id"]
+    conn.execute("UPDATE child SET stage_policy_version=1")   # 断言按 v1 时间轴写
+    conn.commit()
     brain = child_mod.ChildBrain.load(conn, cid)
     child_mod.feed_corpus(conn, brain, cid, "睡吧睡吧,爸爸在这里陪着你呢。", now=T0 + 60)
     yield conn, cid, brain
@@ -104,8 +106,8 @@ def test_surprise_needs_archive_and_respects_quota(born, monkeypatch):
         if events.maybe_surprise(conn, brain, cid, random.Random(i),
                                  now=T0 + 13 * DAY + i * 300):
             fired += 1
-    from nursery.config import SURPRISE_STAGE_QUOTA
-    assert 1 <= fired <= SURPRISE_STAGE_QUOTA["child"]
+    from nursery.config import SURPRISE_WEEK_QUOTA
+    assert 1 <= fired <= SURPRISE_WEEK_QUOTA["child"]   # v0.3:滚动 7 天配额
     for r in conn.execute("SELECT payload_json FROM outbox WHERE kind='nursery.surprise'"):
         p = json.loads(r["payload_json"])
         assert p["utterance"]  # 是模型生成的话,不是查库贴原文
@@ -251,6 +253,9 @@ def test_ending_reconciled(born):
     conn.execute("UPDATE child_state SET intimacy=85, darkness=10 WHERE child_id=?",
                  (cid,))
     t_adult = T0 + 38 * DAY
+    assert events.judge_ending(conn, brain, cid, now=t_adult - 120) is None  # 只开门
+    child_mod.apply_action(conn, cid, "papa", "farewell",   # 门开后亲口才判
+                           idempotency_key="fw", now=t_adult - 60)
     end = events.judge_ending(conn, brain, cid, now=t_adult)
     assert end == "reconciled"
     c = child_mod.get_child(conn, cid)
@@ -277,6 +282,9 @@ def test_ending_independent_by_refusal(born):
             "INSERT INTO utterance(child_id, trigger, stage, text, accepted,"
             " rejection_reason, created_at) VALUES(?,?,?,?,0,'refused',?)",
             (cid, "t", "teen", "", T0 + i))
+    assert events.judge_ending(conn, brain, cid, now=T0 + 38 * DAY - 120) is None
+    child_mod.apply_action(conn, cid, "papa", "farewell",   # 门开后亲口才判
+                           idempotency_key="fw2", now=T0 + 38 * DAY - 60)
     assert events.judge_ending(conn, brain, cid, now=T0 + 38 * DAY) == "independent"
 
 

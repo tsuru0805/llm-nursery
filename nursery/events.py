@@ -19,8 +19,10 @@ from . import child as child_mod
 from . import texts
 from .child import tx
 from .config import (ADULT_GRADUATE_DAYS, DAILY_EVENT_P,
-                     FIRST_SENTENCE_MIN_LEN, MILESTONE_NEW_CHARS_STEP, STAGE_CN,
-                     STAGE_SCHEDULE_V1, SURPRISE_P_PER_TICK, SURPRISE_STAGE_QUOTA)
+                     FIRST_SENTENCE_MIN_LEN, GIFT_EVENT_KEYS,
+                     MILESTONE_NEW_CHARS_STEP, STAGE_CN, STAGE_SCHEDULE_V1,
+                     SURPRISE_ANCHOR_MIN_RUN, SURPRISE_P_PER_TICK,
+                     SURPRISE_WEEK_QUOTA)
 
 
 def _now(now):
@@ -80,9 +82,12 @@ def _emit(conn, child_id: str, *, kind: str, item_kind: str | None, title: str,
 KEEPSAKE_SPEAKER_ROLES = {"papa": "papa", "mama": "mama"}   # speaker → 声部键
 
 
-def _prev_stage(stage: str) -> str | None:
-    """策略表里 stage 的上一段(infant 无上一段=None)。装订漏拍补位用。"""
-    names = [s for s, _ in STAGE_SCHEDULE_V1]
+def _prev_stage(stage: str, child=None) -> str | None:
+    """策略表里 stage 的上一段(infant 无上一段=None)。装订漏拍补位用。
+    按孩子的 policy 查表(各版名字现同,防未来版改名漏拍)。"""
+    schedule = child_mod.stage_schedule_for(child) if child is not None \
+        else STAGE_SCHEDULE_V1
+    names = [s for s, _ in schedule]
     i = names.index(stage) if stage in names else -1
     return names[i - 1] if i > 0 else None
 
@@ -284,7 +289,7 @@ def check_stage_transition(conn, child_id: str, now=None) -> str | None:
     if stage != "infant":
         old_stage = child["celebrated_stage"] or ""
         if old_stage == "embryo" or old_stage not in STAGE_CN:
-            old_stage = _prev_stage(stage) or ""
+            old_stage = _prev_stage(stage, child) or ""
         if old_stage:
             _bind_stage_keepsakes(conn, child, old_stage, t)
     # describe 邀请:新阶段还没记过样子 → 附言随里程碑事件递给照护人,
@@ -301,6 +306,16 @@ def check_stage_transition(conn, child_id: str, now=None) -> str | None:
                title=texts.MS_STAGE_TITLE.format(name=name, stage_cn=STAGE_CN[stage]),
                note=note, payload={"stage": stage},
                idem=f"ms:stage:{stage}:{child_id}", t=t)
+    # 生日 set-piece:阶段跃迁=过一次生日,全家出席。
+    # infant 不发(出生开场已有);runaway 期不开生日会(人不在家);
+    # album 卡自带幂等键,与庆祝事件互不牵连。describe 邀请在上面已有,不重复。
+    if stage != "infant" and child["status"] == "active":
+        _emit(conn, child_id, kind="nursery.event",
+              item_kind=f"birthday_{stage}",
+              title=texts.BIRTHDAY_TITLE.format(name=name, stage_cn=STAGE_CN[stage]),
+              note=texts.BIRTHDAY_NOTE,
+              payload={"stage": stage, "birthday": True},
+              idem=f"bday:{stage}:{child_id}", t=t)
     with tx(conn):
         conn.execute("UPDATE child SET celebrated_stage=?, updated_at=?"
                      " WHERE child_id=?", (stage, t, child_id))
@@ -309,9 +324,14 @@ def check_stage_transition(conn, child_id: str, now=None) -> str | None:
 
 # ────────────────────────── 每日随机事件 ──────────────────────────
 
-def maybe_daily_event(conn, child_id: str, rng: random.Random, now=None) -> str | None:
+def maybe_daily_event(conn, child_id: str, rng: random.Random, now=None, *,
+                      brain=None) -> str | None:
     """确定性日抽签(若每 tick 独立抽 35%,一天几百拍≈每天必出,语义漂):
-    以 (child, date) 种子一次性决定「今天有没有事+几点发生」,tick 只在到点后投递。"""
+    以 (child, date) 种子一次性决定「今天有没有事+几点发生」,tick 只在到点后投递。
+
+    送礼藏品卡:命中 GIFT_EVENT_KEYS(「捡东西给你」类)时,_emit 同事务在
+    growth_album 落一张真实藏品卡(item_kind=gift_{key}_{date} 幂等),
+    note 带他当场 speak 的一句(brain=None/speak 失败=卡照落、note 空,fail-open)。"""
     t = _now(now)
     child = child_mod.get_child(conn, child_id)
     stage = child_mod.stage_of(child, t)
@@ -328,9 +348,46 @@ def maybe_daily_event(conn, child_id: str, rng: random.Random, now=None) -> str 
         return None  # 还没到那一刻
     key, text = pool[day_rng.randrange(len(pool))]
     idem = f"daily:{date}:{child_id}"
-    if _emit(conn, child_id, kind="nursery.event", item_kind=None,
-             title=text, note=None, payload={"event": key, "stage": stage},
-             idem=idem, t=t, expires_at=t + 86400):
+    item_kind = note = None
+    if key in GIFT_EVENT_KEYS:
+        if conn.execute("SELECT 1 FROM outbox WHERE idempotency_key=?",
+                        (idem,)).fetchone() is not None:
+            return None  # 已发过:幂等重放不再白耗一次 speak/rng
+        item_kind = f"gift_{key}_{date}"
+        if brain is not None:
+            try:
+                # 崩溃重放防线:speak 提交后、_emit 前崩过=当日已有 gift
+                # utterance(**含被拒的**——rejected 也提交了行、推进了 RNG),
+                # 一律不再 speak;note 只认 accepted 且正文非空的那句
+                day0 = time.mktime(time.strptime(date, "%Y-%m-%d"))
+                prev = conn.execute(
+                    "SELECT text, accepted FROM utterance WHERE child_id=?"
+                    " AND trigger='gift' AND created_at>=?"
+                    " ORDER BY id DESC LIMIT 1", (child_id, day0)).fetchone()
+                if prev is not None:
+                    voice = prev["text"] if prev["accepted"] else None
+                else:
+                    res = child_mod.child_speak(conn, brain, child_id,
+                                                trigger="gift", now=t)
+                    voice = res.text if res.accepted and res.text.strip() else None
+                if voice and voice.strip():
+                    note = texts.GIFT_ALBUM_NOTE.format(voice=voice)
+            except Exception:
+                note = None  # fail-open:嘴上没憋出话,东西照样递到你手里
+    try:
+        emitted = _emit(conn, child_id, kind="nursery.event", item_kind=item_kind,
+                        title=text, note=note, payload={"event": key, "stage": stage},
+                        idem=idem, t=t, expires_at=t + 86400)
+    except Exception:
+        if item_kind is None:
+            raise  # 非送礼路径维持既有语义(事件系统本账,不在 fail-open 范围)
+        # 藏品卡写不动=退化成普通每日事件(送礼件坏了绝不炸 tick;卡事务已回滚,
+        # 重发 outbox 幂等键同一把,不会双事件)
+        emitted = _emit(conn, child_id, kind="nursery.event", item_kind=None,
+                        title=text, note=None,
+                        payload={"event": key, "stage": stage},
+                        idem=idem, t=t, expires_at=t + 86400)
+    if emitted:
         return key
     return None
 
@@ -339,34 +396,54 @@ def maybe_daily_event(conn, child_id: str, rng: random.Random, now=None) -> str 
 
 def maybe_surprise(conn, brain, child_id: str, rng: random.Random, now=None) -> dict | None:
     """child/teen 期概率引爆:从偷学语料取锚,模型现场重新生成(过护栏),
-    绝不是查库贴原文。每阶段配额+同锚窗只爆一次。"""
+    绝不是查库贴原文。滚动 7 天配额(v0.3,原「每阶段终身」烧干后整条机制
+    永久哑火)+同锚窗只爆一次+锚滤渣(只从纯话芯连续段取锚,时间戳/markdown
+    渣进不来)。"""
+    from .chunks import _clean_runs
     from .decoder import speak
     t = _now(now)
     child = child_mod.get_child(conn, child_id)
     stage = child_mod.stage_of(child, t)
-    quota = SURPRISE_STAGE_QUOTA.get(stage)
+    quota = SURPRISE_WEEK_QUOTA.get(stage)
     if quota is None or child["status"] != "active":
         return None
     if rng.random() > SURPRISE_P_PER_TICK:
         return None
     used = conn.execute(
         "SELECT COUNT(*) FROM outbox WHERE child_id=? AND kind='nursery.surprise'"
-        " AND idempotency_key LIKE ?", (child_id, f"sp:{stage}:%")).fetchone()[0]
+        " AND idempotency_key LIKE ? AND next_attempt_at>=?",
+        (child_id, "sp:%", t - 7 * 86400)).fetchone()[0]
     if used >= quota:
         return None
-    pool = conn.execute(
+    # 最小间隔闸:周配额不挤在同一个钟头里烧完
+    from .config import SURPRISE_MIN_GAP_H
+    recent = conn.execute(
+        "SELECT 1 FROM outbox WHERE child_id=? AND kind='nursery.surprise'"
+        " AND idempotency_key LIKE ? AND next_attempt_at>=? LIMIT 1",
+        (child_id, "sp:%", t - SURPRISE_MIN_GAP_H * 3600)).fetchone()
+    if recent is not None:
+        return None
+    # 确定性采样:候选按 id 取全量(偷学有每日上限,量小),用传入 rng 抽样
+    # ——同种子同库恒同结果(重复 tick 幂等,测试不偶发红)。
+    rows = list(conn.execute(
         "SELECT id, source_ref, text FROM corpus_item WHERE child_id=?"
-        " AND source_kind='archive' ORDER BY id DESC LIMIT 50", (child_id,)).fetchall()
-    rows = rng.sample(pool, min(4, len(pool)))  # 注入的确定性 rng,同时间片可重放
-    # 锚词取自**至少两个不同窗**,由模型重新生成
-    by_win: dict[str, sqlite3.Row] = {}
+        " AND source_kind='archive' ORDER BY id", (child_id,)).fetchall())
+    rng.shuffle(rows)   # 洗牌必须做:不洗则配对钉死在已爆过的窗上永不再爆
+    rows = rows[:6]
+    # 锚词取自**至少两个不同窗**,由模型重新生成。
+    # 滤渣:该行必须有 ≥SURPRISE_ANCHOR_MIN_RUN 的纯话芯段,锚只在段内取。
+    by_win: dict[str, str] = {}
     for r in rows:
         w = (r["source_ref"] or "").split("@", 1)[0]
-        if w and w not in by_win and len(r["text"]) >= 6:
-            by_win[w] = r
+        if not w or w in by_win:
+            continue
+        runs = [run for run in _clean_runs(r["text"])
+                if len(run) >= SURPRISE_ANCHOR_MIN_RUN]
+        if runs:
+            by_win[w] = max(runs, key=len)
     if len(by_win) < 2:
         return None
-    (win_a, row_a), (win_b, row_b) = list(by_win.items())[:2]
+    (win_a, run_a), (win_b, run_b) = list(by_win.items())[:2]
     fired = conn.execute(
         "SELECT 1 FROM outbox WHERE child_id=? AND kind='nursery.surprise'"
         " AND (payload_json LIKE ? OR payload_json LIKE ?) LIMIT 1",
@@ -378,12 +455,12 @@ def maybe_surprise(conn, brain, child_id: str, rng: random.Random, now=None) -> 
         off = rng.randrange(0, len(body) - 3)
         return body[off:off + 3]
 
-    seed = _anchor(row_a["text"]) + _anchor(row_b["text"])  # 两窗锚拼接起头
+    seed = _anchor(run_a) + _anchor(run_b)  # 两窗话芯锚拼接起头
     res = speak(brain.model, brain.guard, stage, rng, seed=seed)
     if not res.accepted:
         return None
     name = child["name"] or texts.DEFAULT_CHILD_NAME
-    idem = f"sp:{stage}:{child_id}:{used + 1}"
+    idem = f"sp:{stage}:{child_id}:{int(t)}"
     payload = {"utterance": res.text, "anchor_wins": [win_a, win_b], "stage": stage}
     if _emit(conn, child_id, kind="nursery.surprise", item_kind=None,
              title=texts.SURPRISE_TITLE.format(name=name),
@@ -491,9 +568,31 @@ def judge_ending(conn, brain, child_id: str, now=None) -> str | None:
     if child_mod.stage_of(child, t) != "adult":
         return None
     age = child_mod.logical_age_days(child, t)
-    from .config import STAGE_SCHEDULE_V1
-    adult_start = STAGE_SCHEDULE_V1[-2][1]  # teen 上限=adult 起点
+    adult_start = child_mod.stage_schedule_for(child)[-2][1]  # teen 上限=adult 起点(按孩子的 policy)
     if age < adult_start + ADULT_GRADUATE_DAYS:
+        return None
+
+    # (M11):毕业线只开「告别门」,**绝不自动开奖**——判定要等主照护人亲口 farewell。
+    # 「再等一天」(stay)不推迟任何时钟:门一直开着,他一直等;stay 的意义在
+    # child_speak(那一天他只说那句话)。门事件幂等一次;告别信文案=五期文案刀。
+    gate_name = child["name"] or "孩子"
+    _emit(conn, child_id, kind="nursery.milestone", item_kind="farewell_gate",
+          title=texts.FAREWELL_GATE_TITLE.format(name=gate_name),
+          note=texts.FAREWELL_GATE_NOTE, payload={"gate": "farewell"},
+          idem=f"fwgate:{child_id}", t=t)
+    # farewell 有效性钉死:门开之后+主照护人槽位(bond 两槽映射到 papa 的
+    # actor 才算——妈妈通道/system 不能替他说再见)+不晚于判定时刻。
+    from .bond import _caregiver_of
+    gate_row = conn.execute(
+        "SELECT created_at FROM growth_album WHERE child_id=?"
+        " AND item_kind='farewell_gate' LIMIT 1", (child_id,)).fetchone()
+    if gate_row is None:
+        return None
+    fw_rows = conn.execute(
+        "SELECT actor FROM action_log WHERE child_id=? AND kind='farewell'"
+        " AND effective_at>=? AND effective_at<=?",
+        (child_id, gate_row["created_at"], t)).fetchall()
+    if not any(_caregiver_of(r["actor"], "farewell") == "papa" for r in fw_rows):
         return None
 
     st = child_mod.read_state(conn, child_id, now=t, persist=False)
@@ -551,14 +650,19 @@ def judge_ending(conn, brain, child_id: str, now=None) -> str | None:
         _emit_locked(conn, child_id, kind="nursery.ending",
                      item_kind=f"ending_{ending}",
                      title=texts.MS_ENDING_TITLE.format(name=name),
-                     note=None, payload=data, idem=f"end:{child_id}", t=t)
+                     note=texts.ENDING_CN.get(ending),   # 判了哪个结局要说人话
+                     payload=data, idem=f"end:{child_id}", t=t)
     return ending
 
 
 def tick_events(conn, brain, child_id: str, now=None) -> dict:
     """scheduler 每拍调:全部事件检查。rng 用 (child, 时间片) 种子,重复 tick 幂等。"""
     t = _now(now)
+    # 各机制独立种子命名空间:共用一个 rng 时,surprise 耗随机数会改变
+    # runaway 的序列——一个机制的行为不许影响另一个的骰子
     rng = random.Random(f"{child_id}:events:{int(t // 300)}")
+    rng_sp = random.Random(f"{child_id}:events:sp:{int(t // 300)}")
+    rng_ra = random.Random(f"{child_id}:events:ra:{int(t // 300)}")
     out = {"milestones": check_milestones(conn, brain, child_id, now=t)}
     stage = check_stage_transition(conn, child_id, now=t)
     if stage:
@@ -566,13 +670,13 @@ def tick_events(conn, brain, child_id: str, now=None) -> dict:
     neglect = check_neglect(conn, child_id, now=t)
     if neglect:
         out["neglect"] = neglect
-    ev = maybe_daily_event(conn, child_id, rng, now=t)
+    ev = maybe_daily_event(conn, child_id, rng, now=t, brain=brain)
     if ev:
         out["daily"] = ev
-    sp = maybe_surprise(conn, brain, child_id, rng, now=t)
+    sp = maybe_surprise(conn, brain, child_id, rng_sp, now=t)
     if sp:
         out["surprise"] = True
-    if maybe_runaway(conn, child_id, rng, now=t):
+    if maybe_runaway(conn, child_id, rng_ra, now=t):
         out["runaway"] = True
     end = judge_ending(conn, brain, child_id, now=t)
     if end:

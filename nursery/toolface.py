@@ -25,6 +25,7 @@ _TIMEOUT = 20    # 子进程超时(秒;含模型装载)
 _PUBLIC_CMDS = frozenset({
     "help", "status", "feed", "soothe", "diaper", "burp", "play", "teach",
     "talk", "discipline", "describe", "name", "album", "log",
+    "choose", "farewell", "stay",   # v0.3:两难拍板/结局日(阶段闸在 driver 层)
 })
 
 
@@ -54,6 +55,8 @@ def nursery(player: str, command: str = "") -> str:
     body = body.strip()
     if head in ("feed", "teach", "talk", "describe", "name"):
         argv = [head] + ([body] if body else [])
+    elif head == "choose":
+        argv = [head] + body.split()[:2]   # choose <编号> <a|b>
     else:
         argv = [head]  # 其余命令不带参数,尾巴忽略
     try:

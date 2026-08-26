@@ -43,6 +43,9 @@ _KIND_CN = {
     "neglect": "他一整晚哭了,没有人来", "runaway": "他离家出走了",
     "mama_hug": "抱了抱他", "mama_soothe": "哄了他", "mama_touch": "摸了摸他",
     "mama_say": "跟他说了话", "overhear": "他偷听到了大人说话",
+    # 摩擦轴系统事件(annoyance 独立于三轴,规则表刻意无它们的条目;
+    # 只是让 DS 输入摘要的事件行读得通,不瞎编心理效果)
+    "left_alone": "他自己待了一整个白天,没有人找他",
 }
 
 
@@ -169,6 +172,26 @@ def apply_rules_locked(conn, child_id: str, kind: str, t: float, *,
                 for ax, dv in _bump_locked(
                         conn, child_id, cfg.PSYCHE_NIGHT_RESPONSE_BONUS,
                         reason="night_cry_responded", source_key=sk, t=t).items():
+                    applied[ax] = applied.get(ax, 0.0) + dv
+    # 生病照顾():病窗内 feed/soothe=「被需要」时有人来的加成。
+    # 每病日每动作类别一次(parenting_meta 占位,与夜哭响应同形制防重复领);
+    # fail-open:窗查询坏了当没病,不影响动作本账。
+    if kind in cfg.SICK_CARE_KINDS:
+        try:
+            from .sickness import open_sickness_date
+            sick_open = open_sickness_date(conn, child_id, t) is not None
+        except Exception:
+            sick_open = False
+        if sick_open:
+            day = time.strftime("%Y-%m-%d", time.localtime(t))
+            sk = f"sickcare:{day}:{kind}"
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO parenting_meta(child_id, key, value,"
+                " updated_at) VALUES(?,?,'1',?)", (child_id, sk, t))
+            if cur.rowcount > 0:
+                for ax, dv in _bump_locked(
+                        conn, child_id, cfg.SICK_CARE_BONUS,
+                        reason="sick_care", source_key=sk, t=t).items():
                     applied[ax] = applied.get(ax, 0.0) + dv
     return applied
 

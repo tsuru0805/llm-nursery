@@ -71,7 +71,7 @@ def _axis_rows(conn, cid, reason=None):
     return conn.execute(q + " ORDER BY id", args).fetchall()
 
 
-# ── 消化负荷:结算衰减(昼/夜速率) ──
+# ── 消化负荷:结算衰减(日/夜速率) ──
 
 def test_digest_decay_day_vs_night():
     base = dict(mood=60.0, health=80.0, intimacy=20.0, nutrition=50.0,

@@ -6,7 +6,7 @@
 chunk_index 是**派生数据**:任何时刻可全量重建,坏了删掉重建即可,不进备份关键面。
 
 睡眠整理(consolidate_daily):每天 07:00 后首拍重建一次(=夜里把白天听的话
-变成自己的);部署后 meta 缺行=当拍立即引导重建。全部纯标准库(§14 开源纪律)。
+变成自己的);部署后 meta 缺行=当拍立即引导重建。全部纯标准库(开源纪律)。
 """
 from __future__ import annotations
 
@@ -20,6 +20,73 @@ from . import config as cfg
 _BAD_CHAR = re.compile(r"[\s\d\W]", re.UNICODE)
 
 _META_KEY = "chunks_consolidated_date"
+_BIAS_KEY = "chunk_bias"   # :{词: 系数} 0=抑制(不再当种子),>1=提权
+
+
+def load_chunk_bias(conn, child_id: str) -> dict:
+    """词块偏置表(选择题后果:管=抑制/笑=提权)。坏值=空表(fail-open)。"""
+    row = conn.execute(
+        "SELECT value FROM parenting_meta WHERE child_id=? AND key=?",
+        (child_id, _BIAS_KEY)).fetchone()
+    if row is None or not row["value"]:
+        return {}
+    try:
+        bias = json.loads(row["value"])
+        return bias if isinstance(bias, dict) else {}
+    except ValueError:
+        return {}
+
+
+def _apply_bias_weight(chunk: str, weight: float, bias: dict) -> float | None:
+    """一个词块过偏置表:含抑制词=None(丢弃),含提权词=权重乘系数。"""
+    w = weight
+    for word, factor in bias.items():
+        if word and word in chunk:
+            try:
+                f = float(factor)
+            except (TypeError, ValueError):
+                continue
+            if f <= 0:
+                return None
+            w *= f
+    return w
+
+
+def set_chunk_bias(conn, child_id: str, word: str, factor: float,
+                   now: float | None = None) -> bool:
+    """落一条词块偏置(meta 持久)+当场作用于现有索引(重建前不留空窗)。
+
+    幂等:同词同系数重放=不动(choose 崩后续跑不双乘)。改值按新旧系数比
+    调整(不叠乘,与 rebuild 只施加终值的口径一致);从抑制(0)改回正数=
+    行已删,走全量重建复活。索引是派生数据,夜里 rebuild_index 会按 meta
+    重新施加同一偏置,两口径一致。"""
+    from .child import _now, tx
+    t = _now(now)
+    rebuild_needed = False
+    with tx(conn):
+        bias = load_chunk_bias(conn, child_id)
+        old = bias.get(word)
+        if old == factor:
+            return False   # 已生效(重放)
+        bias[word] = factor
+        conn.execute(
+            "INSERT INTO parenting_meta(child_id, key, value, updated_at)"
+            " VALUES(?,?,?,?) ON CONFLICT(child_id, key) DO UPDATE SET"
+            " value=excluded.value, updated_at=excluded.updated_at",
+            (child_id, _BIAS_KEY, json.dumps(bias, ensure_ascii=False), t))
+        if factor <= 0:
+            conn.execute("DELETE FROM chunk_index WHERE child_id=?"
+                         " AND instr(chunk, ?)>0", (child_id, word))
+        elif old is not None and old <= 0:
+            rebuild_needed = True   # 抑制→复活:行没了,事务外全量重建
+        else:
+            ratio = factor / old if old else factor   # 改值=比例调,首设=直乘
+            conn.execute("UPDATE chunk_index SET weight=weight*?, updated_at=?"
+                         " WHERE child_id=? AND instr(chunk, ?)>0",
+                         (ratio, t, child_id, word))
+    if rebuild_needed:
+        rebuild_index(conn, child_id, now=t)   # 自带顶层事务,禁嵌套
+    return True
 
 
 def _clean_runs(text: str) -> list[str]:
@@ -78,6 +145,17 @@ def rebuild_index(conn, child_id: str, now: float | None = None) -> int:
             " ORDER BY id", (child_id,)).fetchall()
         chunks = extract_chunks((r["text"], r["scene"], r["training_weight"])
                                 for r in rows)
+        # 词块偏置:抑制词整条丢弃,提权词乘系数(与 set_chunk_bias 即时口径一致)
+        bias = load_chunk_bias(conn, child_id)
+        if bias:
+            biased = []
+            for c in chunks:
+                w = _apply_bias_weight(c["chunk"], c["weight"], bias)
+                if w is None:
+                    continue
+                c["weight"] = w
+                biased.append(c)
+            chunks = biased
         conn.execute("DELETE FROM chunk_index WHERE child_id=?", (child_id,))
         for c in chunks:
             conn.execute(
