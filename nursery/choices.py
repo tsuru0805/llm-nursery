@@ -166,7 +166,7 @@ def fire_due_choices(conn, brain: "child_mod.ChildBrain", child_id: str,
                 "_name": name, "_word": meta.get("word", ""),
             }
             # wire 不带内部槽位也不带 None:契约=「字段是 str 或干脆没有」,
-            # 不靠 接入层 收件侧帮忙剔形状(评审定案)
+            # 不靠接入层收件侧帮忙剔形状(评审定案)
             conn.execute(
                 "INSERT OR IGNORE INTO outbox(child_id, target, kind, payload_json,"
                 " status, next_attempt_at, expires_at, idempotency_key)"
