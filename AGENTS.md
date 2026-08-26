@@ -75,7 +75,7 @@
 14. **词块不绕闸**:chunk 只在字符全部落在词汇解锁集内时作为 seed;护栏照跑;infant 概率恒 0 且不耗 rng。
 15. **结局不自动开奖**:毕业线只开告别门(幂等一次);判定必须有门开之后、主照护人槽位 actor 的 farewell 账;`stay` 定稿句 model_snapshot_id=NULL(不冒充模型输出)。
 16. **阶段表升版永不倒龄**:`--set-policy` 单向升版+倒龄守卫+graduated 锁死;老档的 stage_policy_version 迁移时原样保留。
-17. **tick 新机制全部自守闸**:asks/choices/chains/friction/magic/sickness/growth 任何一件炸了不许拦 tick(fail-open,空结果照旧);事件抽签一律确定性种子((child, 模板, date)),禁 `ORDER BY RANDOM()`。
+17. **tick 新机制全部自守闸**:asks/choices/chains/friction/magic/sickness/growth 任何一件炸了不许拦 tick(fail-open,空结果照旧);事件抽签一律确定性种子((child, 模板, date)),事件路径禁 `ORDER BY RANDOM()`(唯一既有例外=sampler 偷学取窗,那里不要求 tick 级可重放)。
 18. **v0.3 机制不翻旧账**:老档迁移钉 per-child `rules_v3_since` 戳;新记账机制的历史扫描窗一律日窗/向前,不读升级前存量。
 
 ## env 变量

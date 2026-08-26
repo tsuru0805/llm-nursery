@@ -9,7 +9,7 @@
   fired 的夜」口径)。
 - fire_due_asks:到点触发→他真实开口(child_speak trigger='ask',失败=兜底稿)
   +场景模板包一句(texts.ASK_SCENES 朴素 v1)→outbox kind='nursery.ask',
-  payload.target=papa/mama 由 接入层按 target 分路。
+  payload.target=papa/mama,由接入层按 target 分路。
   outbox.expires_at=响应窗关点:窗关还没投出去的不再递(过时的招手不补播)。
 - settle_asks:窗关后记账一次:窗内(**实际 fire 时刻起算**,不是计划 due_at——
   tick 迟到时他还没真出现,之前的动作不算接住)目标动词集(ASK_RESPONSE_KINDS)
@@ -40,10 +40,12 @@ def derive_tattle(conn, child_id: str, target: str, t: float) -> str | None:
     """告状/吐槽稿:内容=当日 action_log 真账(零次也是真账,
     「都没陪我玩」由真实零计数派生,不编)。找妈妈=告爸爸的状(凶我了>
     没陪我玩>正面汇报);找爸爸=吐槽/汇报妈妈。返回带 {voice} 槽的完整
-    场景模板(他真实模型的那句仍在场);查询异常由调用方兜回普通场景稿。"""
-    day0 = _local_midnight(t)
+    场景模板(他真实模型的那句仍在场);查询异常由调用方兜回普通场景稿。
+    老档升级当日不翻旧账:计数窗起点不早于 v0.3 生效时刻。"""
+    day0 = max(_local_midnight(t), child_mod._rules_v3_since(conn, child_id))
 
     def _count(kinds, actor=None, exclude=()):
+        exclude = exclude or ("system",)   # 兜底:永不生成 NOT IN () 空列表
         marks = ",".join("?" for _ in kinds)
         if actor is not None:
             return conn.execute(
@@ -134,6 +136,7 @@ def fire_due_asks(conn, brain: "child_mod.ChildBrain", child_id: str,
     child = child_mod.get_child(conn, child_id)
     name = child["name"] or "孩子"
     fired: list[dict] = []
+    templates: dict = {}
     with tx(conn):
         rows = conn.execute(
             "SELECT * FROM scheduled_event WHERE child_id=? AND kind='ask'"
@@ -169,13 +172,14 @@ def fire_due_asks(conn, brain: "child_mod.ChildBrain", child_id: str,
                 "kind": "nursery.ask",
                 "title": texts.ASK_TITLE.format(name=name),
                 "text": template.format(voice=texts.ASK_FALLBACK_VOICE),
-                "voice": None, "scene": scene_key,
+                "scene": scene_key,
                 "target": meta.get("target", "papa"), "stage": stage,
                 # 全 str(接入层可做纯 str 硬校验);注入前过滤用
                 "window_until": str(int(ev["expires_at"])), "ts": t,
                 "source_event_id": f"ask:{child_id}:{ev['id']}",
-                "_template": template,
             }
+            # 场景模板不进 wire(崩在 speak 前也不把内部槽投给 webhook)
+            templates[payload["source_event_id"]] = template
             conn.execute(
                 "INSERT OR IGNORE INTO outbox(child_id, target, kind, payload_json,"
                 " status, next_attempt_at, expires_at, idempotency_key)"
@@ -186,7 +190,7 @@ def fire_due_asks(conn, brain: "child_mod.ChildBrain", child_id: str,
             fired.append(payload)
     # 他真实开口(事务外);拿到后回写 pending 的 outbox 行
     for p in fired:
-        template = p.pop("_template")
+        template = templates[p["source_event_id"]]
         try:
             res = child_mod.child_speak(conn, brain, child_id,
                                         trigger="ask", now=t)

@@ -173,7 +173,7 @@ def apply_rules_locked(conn, child_id: str, kind: str, t: float, *,
                         conn, child_id, cfg.PSYCHE_NIGHT_RESPONSE_BONUS,
                         reason="night_cry_responded", source_key=sk, t=t).items():
                     applied[ax] = applied.get(ax, 0.0) + dv
-    # 生病照顾():病窗内 feed/soothe=「被需要」时有人来的加成。
+    # 生病照顾:病窗内的照料=「被需要」时有人来的加成。
     # 每病日每动作类别一次(parenting_meta 占位,与夜哭响应同形制防重复领);
     # fail-open:窗查询坏了当没病,不影响动作本账。
     if kind in cfg.SICK_CARE_KINDS:

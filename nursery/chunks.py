@@ -20,7 +20,7 @@ from . import config as cfg
 _BAD_CHAR = re.compile(r"[\s\d\W]", re.UNICODE)
 
 _META_KEY = "chunks_consolidated_date"
-_BIAS_KEY = "chunk_bias"   # :{词: 系数} 0=抑制(不再当种子),>1=提权
+_BIAS_KEY = "chunk_bias"   # {词: 系数} 0=抑制(不再当种子),>1=提权
 
 
 def load_chunk_bias(conn, child_id: str) -> dict:

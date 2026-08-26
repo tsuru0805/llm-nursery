@@ -154,7 +154,9 @@ def hatch_child(conn: sqlite3.Connection, child_id: str, *,
             return child_id
         conn.execute(
             "UPDATE child SET status='active', name=COALESCE(?, name), born_at=?,"
-            " updated_at=? WHERE child_id=?", (name, t, t, child_id))
+            " stage_policy_version=?, updated_at=? WHERE child_id=?",
+            (name, t, STAGE_POLICY_VERSION, t, child_id))
+        # 孵化=此刻才出生:阶段表按当前版走(embryo 期没有年龄,不存在倒龄)
         conn.execute(
             "INSERT OR IGNORE INTO child_state(child_id, mood, health, intimacy,"
             " nutrition, fatigue, last_settled_at, updated_at) VALUES(?,?,?,?,?,?,?,?)",

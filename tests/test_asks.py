@@ -233,7 +233,7 @@ def test_settle_counts_from_actual_fire_not_due(kid, conn, monkeypatch):
 
 
 def test_observer_quiet_not_suppressed_by_ask(kid, conn, monkeypatch):
-    """白天 fired 的 ask 不算「哭闹」——安静观察行照发(评审定案 回归)。"""
+    """白天 fired 的 ask 不算「哭闹」——安静观察行照发(评审定案回归)。"""
     from nursery import observer
     cid, brain = kid
     _patch_plan(monkeypatch, n=(1, 1))

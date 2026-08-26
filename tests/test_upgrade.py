@@ -316,3 +316,43 @@ def test_upgrade_day_nag_quota_ignores_pre_upgrade_actions(tmp_path):
     st = child_mod.read_state(conn, "oldkid", now=t_upgrade + 600, persist=False)
     assert st.get("annoyance", 0.0) == 0.0   # 升级前的唠叨不翻旧账
     conn.close()
+
+
+def test_upgrade_day_tattle_ignores_pre_upgrade_actions(tmp_path):
+    """告状稿的当日计数窗也从升级戳起算:升级前同日的 discipline 不进告状。"""
+    from nursery import asks
+    p = _make_v8_db(str(tmp_path / "old.db"))
+    conn = pdb.connect(p)
+    t_upgrade = T0 + 6 * DAY + 14 * 3600     # 某天 14:00 升级
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE parenting_meta SET value=? WHERE child_id='oldkid'"
+                 " AND key='rules_v3_since'", (repr(t_upgrade),))
+    conn.commit()
+    # 升级前同日 10:00 有一条管教
+    child_mod.apply_action(conn, "oldkid", "papa", "discipline",
+                           idempotency_key="pre-disc", now=t_upgrade - 4 * 3600)
+    line = asks.derive_tattle(conn, "oldkid", "mama", t_upgrade + 3600)
+    from nursery import texts
+    assert texts.TATTLE_MAMA_DISC not in line   # 升级前的凶不进状纸
+    # 升级后再凶一次=照常告状(不翻旧账≠不告状)
+    child_mod.apply_action(conn, "oldkid", "papa", "discipline",
+                           idempotency_key="post-disc", now=t_upgrade + 7200)
+    line2 = asks.derive_tattle(conn, "oldkid", "mama", t_upgrade + 7300)
+    assert texts.TATTLE_MAMA_DISC in line2
+    conn.close()
+
+
+def test_embryo_hatched_after_upgrade_gets_current_policy(tmp_path):
+    """v0.2 存量 embryo 在 v0.3 孵化=此刻才出生,按当前阶段表(v2)走。"""
+    p = _make_v8_db(str(tmp_path / "old2.db"))
+    conn = pdb.connect(p)
+    eid = child_mod.create_child(conn, "papa", status="embryo", now=T0)
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE child SET stage_policy_version=1 WHERE child_id=?",
+                 (eid,))   # 模拟 v0.2 时代建的 embryo 档
+    conn.commit()
+    child_mod.hatch_child(conn, eid, name="蛋蛋", now=T0 + 100 * DAY)
+    child = child_mod.get_child(conn, eid)
+    assert child["stage_policy_version"] == 2
+    assert child_mod.stage_of(child, T0 + 100 * DAY + 40 * DAY) == "teen"  # v2:48 线
+    conn.close()

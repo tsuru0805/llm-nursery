@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """选择题事件:事件从播报升级为两难,选项有真后果。
 
-骑在ask 同族形制上,三段生命周期全幂等:
+骑在 ask 同族形制上,三段生命周期全幂等:
 
 - plan_choices:两类触发。
   · swear(触发型):偷学进账(source_kind='archive')命中 SWEAR_WORDS 词表
@@ -80,6 +80,12 @@ def plan_choices(conn, child_id: str, now=None) -> int:
                 # 不翻旧账(child._rules_v3_since,「升级首拍连环爆」防线)
                 v3 = child_mod._rules_v3_since(conn, child_id)
                 for word in sorted(set(cfg.SWEAR_WORDS), key=len, reverse=True):
+                    # 该词一生一次:已排过班就不再跑 instr 全扫(热路径省身)
+                    if conn.execute(
+                            "SELECT 1 FROM scheduled_event WHERE child_id=?"
+                            " AND kind='choice' AND idempotency_key=? LIMIT 1",
+                            (child_id, f"choice:{name}:{word}")).fetchone() is not None:
+                        continue
                     hit = conn.execute(
                         "SELECT 1 FROM corpus_item WHERE child_id=?"
                         " AND source_kind='archive' AND acquired_at>=?"

@@ -149,7 +149,7 @@ def test_nag_leaves_darkness_semantics_alone(teen, conn):
 def test_olive_branch_drops_and_emits_once(teen, conn):
     cid, _ = teen
     _set_annoy(conn, 60.0)
-    child_mod.apply_action(conn, cid, "papa", "talk",
+    child_mod.apply_action(conn, cid, "papa", "soothe",
                            idempotency_key="olive1", now=NOW + 1)
     st = _state(conn, cid, NOW + 1)
     assert st["annoyance"] == pytest.approx(60.0 - cfg.ANNOY_OLIVE_DROP, abs=0.1)
@@ -169,14 +169,28 @@ def test_olive_branch_drops_and_emits_once(teen, conn):
                         " idempotency_key LIKE 'olive:%'").fetchone()[0] == 1
 
 
-def test_olive_not_nag_when_high(teen, conn):
-    """高位时的 talk=台阶不算唠叨:连轰也不涨,只降。"""
+def test_talk_still_nags_at_high_annoyance(teen, conn):
+    """talk 不是台阶:高位连轰照样涨(台阶只认哄类——不然摔门永远够不到)。"""
     cid, _ = teen
-    _set_annoy(conn, 90.0)
+    _set_annoy(conn, 80.0)
     for i in range(cfg.ANNOY_NAG_FREE + 2):
         child_mod.apply_action(conn, cid, "papa", "talk",
                                idempotency_key=f"hi{i}", now=NOW + i)
-    assert _state(conn, cid, NOW + 10)["annoyance"] < 90.0
+    assert _state(conn, cid, NOW + 10)["annoyance"] > 80.0
+
+
+def test_door_and_snark_thresholds_reachable_by_play(teen, conn):
+    """终审回归:正常玩法(纯 talk 连轰,不手工注数值)能真实攒过
+    顶嘴阈(ANNOY_SNARK_MIN)与摔门阈(ANNOY_DOOR_AT)——高位表现不是死代码。"""
+    cid, _ = teen
+    t = NOW
+    for day in range(3):
+        for i in range(20):
+            child_mod.apply_action(conn, cid, "papa", "talk",
+                                   idempotency_key=f"nag{day}-{i}",
+                                   now=t + day * 86400.0 + i * 60)
+    peak = _state(conn, cid, t + 2 * 86400.0 + 20 * 60)["annoyance"]
+    assert peak >= cfg.ANNOY_DOOR_AT > cfg.ANNOY_SNARK_MIN
 
 
 def test_mama_soothe_gives_olive(teen, conn):

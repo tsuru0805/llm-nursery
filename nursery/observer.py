@@ -128,7 +128,7 @@ def _obs_new_chars(conn, child_id: str, day0: float, t: float):
 def _obs_stale_chunk(conn, child_id: str, day0: float, t: float):
     """很久没说某个家常词(词块 top10 里滚动 72h 没出现在他嘴里的;
     窗内他得真说过 ≥3 句,否则是没人逗他说话,不怪词)。窗口=[t-72h, t]
-    双端夹取(评审。"""
+    双端夹取(评审定案)。"""
     since = t - 3 * 86400
     said = [r["text"] for r in conn.execute(
         "SELECT text FROM utterance WHERE child_id=? AND accepted=1"
@@ -196,10 +196,10 @@ def _obs_asks(conn, child_id: str, day0: float, t: float):
 _CANDIDATES = (
     # diary()自身钉 teen——非 teen 恒 None 不占名额;teen 期招牌观察排最前
     ("diary", _obs_diary),
-    ("taught", _obs_taught_word),   # :溯源点名——养成感的核心闭环
+    ("taught", _obs_taught_word),   # 溯源点名——养成感的核心闭环
     ("repeat", _obs_repeat),
     ("unfinished", _obs_unfinished),
-    ("asks", _obs_asks),            # :今天他来找过人的真账
+    ("asks", _obs_asks),            # 今天他来找过人的真账
     ("quiet", _obs_quiet),
     ("new_chars", _obs_new_chars),
     ("stale_chunk", _obs_stale_chunk),

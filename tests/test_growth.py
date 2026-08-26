@@ -186,7 +186,7 @@ def test_db_v9_migrates_to_v10_index(tmp_path):
 
 def test_notebook_query_uses_time_index(kid, conn):
     """小本子时间窗读口必须走 (child_id, created_at, id) 索引,
-    不许 temp b-tree 全量排序(有界性,评审 二审阻断)。"""
+    不许 temp b-tree 全量排序(有界性,评审定案)。"""
     cid, _ = kid
     plan = " ".join(r["detail"] for r in conn.execute(
         "EXPLAIN QUERY PLAN SELECT anchor_words_json FROM psyche_decision"

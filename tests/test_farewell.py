@@ -100,7 +100,7 @@ def test_driver_gate_guard_and_uncle_block(saves, grown, monkeypatch):
 
 
 def test_farewell_before_gate_or_wrong_actor_invalid(grown):
-    """门前的/非papa的 farewell 账不解锁判定(评审定案 回归)。"""
+    """门前的/非papa的 farewell 账不解锁判定(评审定案回归)。"""
     conn, cid, brain = grown
     child_mod.apply_action(conn, cid, "papa", "farewell", idempotency_key="e1",
                           now=T_GRAD - DAY)          # 门还没开
@@ -115,7 +115,7 @@ def test_farewell_before_gate_or_wrong_actor_invalid(grown):
 
 
 def test_stay_utterance_has_null_snapshot(grown):
-    """定稿句不冒充模型输出:model_snapshot_id=NULL(评审定案 回归)。"""
+    """定稿句不冒充模型输出:model_snapshot_id=NULL(评审定案回归)。"""
     conn, cid, brain = grown
     events.judge_ending(conn, brain, cid, now=T_GRAD)
     child_mod.apply_action(conn, cid, "papa", "stay", idempotency_key="s9",

@@ -427,7 +427,8 @@ def maybe_surprise(conn, brain, child_id: str, rng: random.Random, now=None) -> 
     # ——同种子同库恒同结果(重复 tick 幂等,测试不偶发红)。
     rows = list(conn.execute(
         "SELECT id, source_ref, text FROM corpus_item WHERE child_id=?"
-        " AND source_kind='archive' ORDER BY id", (child_id,)).fetchall())
+        " AND source_kind='archive' ORDER BY id DESC LIMIT 200",
+        (child_id,)).fetchall())   # 近窗有界:长档不整表进内存
     rng.shuffle(rows)   # 洗牌必须做:不洗则配对钉死在已爆过的窗上永不再爆
     rows = rows[:6]
     # 锚词取自**至少两个不同窗**,由模型重新生成。
@@ -572,9 +573,9 @@ def judge_ending(conn, brain, child_id: str, now=None) -> str | None:
     if age < adult_start + ADULT_GRADUATE_DAYS:
         return None
 
-    # :毕业线只开「告别门」,**绝不自动开奖**——判定要等主照护人亲口 farewell。
+    # 毕业线只开「告别门」,**绝不自动开奖**——判定要等主照护人亲口 farewell。
     # 「再等一天」(stay)不推迟任何时钟:门一直开着,他一直等;stay 的意义在
-    # child_speak(那一天他只说那句话)。门事件幂等一次;告别信文案=五期文案刀。
+    # child_speak(那一天他只说那句话)。门事件幂等一次;告别信正文=文案层可换。
     gate_name = child["name"] or "孩子"
     _emit(conn, child_id, kind="nursery.milestone", item_kind="farewell_gate",
           title=texts.FAREWELL_GATE_TITLE.format(name=gate_name),

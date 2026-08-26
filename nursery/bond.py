@@ -48,7 +48,7 @@ def _ensure_rows_locked(conn, child_id: str, t: float) -> None:
 def _bump_locked(conn, child_id: str, caregiver: str, deltas: dict, *,
                  reason: str, source_key: str | None, t: float) -> dict:
     """流水记**实际生效增量**(0-100 夹取后 after-cur),饱和顶格=零增量不落行
-    ——趋势永远反映真实变化,不虚报(评审。"""
+    ——趋势永远反映真实变化,不虚报(评审定案)。"""
     applied: dict = {}
     for dim, delta in deltas.items():
         if dim not in cfg.BOND_DIMS or not delta:

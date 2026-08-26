@@ -450,8 +450,12 @@ ANNOY_NAG_KINDS = frozenset({"talk", "teach"})   # 当日同类重复超免费�
 ANNOY_NAG_FREE = 3                # 免费额:当日同类第 4 次起算唠叨(_daily_repeat_count 口径)
 ANNOY_NAG_STEP = 6.0              # 唠叨超额部分每次 +6
 ANNOY_QUIET_STEP = 10.0           # 白天被晾整段(observer quiet 同口径,复用不重造)+10
-ANNOY_OLIVE_KINDS = frozenset({"talk", "soothe", "mama_soothe", "mama_hug"})
-ANNOY_OLIVE_MIN = 40.0            # 高位阈:此值以上的哄/谈心=「给台阶」不算唠叨
+# 台阶=哄类动作(soothe 家族)。talk 刻意**不在**此集:talk 是唠叨路本体,
+# 若同时算台阶,annoyance 一过 40 就被 talk 消回去,摔门(70)/顶嘴(50)
+# 数学上永不可达(终审实测天花板≈46)。青春期爸爸面没有 soothe——
+# 递台阶主要靠妈妈通道的哄/抱,这正是「妈妈是缓冲垫」的机制面。
+ANNOY_OLIVE_KINDS = frozenset({"soothe", "mama_soothe", "mama_hug"})
+ANNOY_OLIVE_MIN = 40.0            # 高位阈:此值以上的哄=「给台阶」
 ANNOY_OLIVE_DROP = 25.0           # 台阶消解幅度(另发一条和解事件,每日至多一次)
 ANNOY_REFUSE_MAX_P = 0.35         # annoyance=100 时已读不回概率上限(摩擦路;
                                   # 黑暗值路 ATTITUDE_REFUSE_MAX_P 语义不动,取 max)
@@ -500,10 +504,10 @@ SICK_CARE_KINDS = ("feed", "soothe",   # 病窗内「照顾」动作(psyche 加�
 SICK_CARE_BONUS = dict(anxiety=-2.5, esteem=+0.5)   # 难受时有人来=不安-被在乎+
 
 
-# ── 动作 kind 权威全集(接入层镜像同步闸)──────────────────────
-# 单一权威源:引擎全部 action_log kind。前端 design-base lib/cradleKinds 的
-# actionLine 表镜像此集——**加新 kind 必进此集**,绊线测试(test_action_kind_registry)
-# 会红;红了就同步去改前端表(它测的是快照,这边才是真相)。
+# ── 动作 kind 权威全集 ────────────────────────────────────
+# 单一权威源:引擎全部 action_log kind。接入层/前端若镜像此集渲染动作行,
+# 以这里为真相。**加新 kind 必进此集**——绊线测试
+# tests/test_action_kind_registry.py 会红。
 ACTION_KINDS_ALL = frozenset({
     # 主照护人动词
     "feed", "soothe", "diaper", "burp", "play", "talk", "teach", "discipline",

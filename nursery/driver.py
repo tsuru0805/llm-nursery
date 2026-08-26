@@ -398,7 +398,7 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
         return f"{texts.FAREWELL_GO_REPLY}{tail}"
 
     if cmd == "choose":
-        # :两难拍板(父母专属,叔叔在上面 UNCLE_BLOCKED 已拦)。
+        # 两难拍板(照护人专属;未登记 persona 在 run() 的白名单已拦)。
         # 编号=事件里带的 choice_id;后果真实落账,选完不能反悔。
         from .choices import resolve_choice
         parts = rest.split()
