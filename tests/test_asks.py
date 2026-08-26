@@ -96,7 +96,7 @@ def test_fire_emits_outbox_with_real_voice(kid, conn, monkeypatch):
     p = json.loads(row["payload_json"])
     assert p["title"] == "孩子来找你了" and p["target"] == "papa"
     assert "「" in p["text"]
-    assert p["window_until"] == str(int(row["expires_at"]))  # 全 str(gateway 硬校验)
+    assert p["window_until"] == str(int(row["expires_at"]))  # 全 str(接入层可做纯 str 硬校验)
     # 二次触发不重复(status 已 fired+outbox 幂等键)
     assert asks.fire_due_asks(conn, brain, cid, now=due + 120) == []
 

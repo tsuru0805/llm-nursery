@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.3:可见成长(机制 M9)——宝贝盒/孩子的小本子/生日 set-piece。
+"""v0.3:可见成长——宝贝盒/孩子的小本子/生日 set-piece。
 
 全部派生可见化:数据查不出=不发,不编;DS 原文/裸数值绝不出现在事件里。
 """
@@ -113,7 +113,7 @@ def test_notebook_from_decision_safe_fields(kid, conn):
                        (f"notebook:{date}:{cid}",)).fetchone()
     p = json.loads(row["payload_json"])
     assert "抱抱" in p["title"] and "恐龙" in p["title"]   # 锚词=安全字段
-    assert p["note"] == "笔画松了些。"   # 方向词→旁观一笔(0825 灵魂化批)
+    assert p["note"] == "笔画松了些。"   # 方向词→旁观一笔
     blob = row["payload_json"]
     assert "想找爸爸" not in blob      # behavior/DS 原文不外露
     assert "falling" not in p["title"]  # 裸英文方向词不进文案

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""v0.3:青春期专修·摩擦轴 annoyance(机制 M8)。
+"""v0.3:青春期专修·摩擦轴 annoyance。
 
-总纲④钉死:摩擦轴独立于黑暗值——本文件同时验证 darkness 语义未被动过。
+设计原则钉死:摩擦轴独立于黑暗值——本文件同时验证 darkness 语义未被动过。
 全部临时 db + 假时钟注入;真实 RULES_V2_SINCE(T0=2027 年,晚于切换时刻)。
 """
 import json
@@ -132,7 +132,7 @@ def test_nag_teen_only(teen, conn):
 
 
 def test_nag_leaves_darkness_semantics_alone(teen, conn):
-    """总纲④:唠叨只挂摩擦轴——talk 的 darkness 效果(-2.5 温暖降叛逆)原样。"""
+    """设计原则:唠叨只挂摩擦轴——talk 的 darkness 效果(-2.5 温暖降叛逆)原样。"""
     cid, _ = teen
     conn.execute("UPDATE child_state SET darkness=50, last_settled_at=?", (NOW,))
     for i in range(cfg.ANNOY_NAG_FREE + 1):
@@ -376,7 +376,7 @@ def test_diary_only_for_teen(teen, conn):
     assert "diary" not in out
 
 
-# ── 0825 扩 child 后半(她放权「顺着推」):账减半/前半不闹/戏剧件不下放 ──
+# ── child 后半扩展:账减半/前半不闹/戏剧件不下放 ──
 
 CHILD_LATE = T0 + 20 * DAY    # child(12-24)后半:过中点 18 天
 CHILD_EARLY = T0 + 13 * DAY   # child 前半

@@ -89,8 +89,7 @@ def _quiet_annoyance(conn, child_id: str, t: float,
     # 升级当日不翻旧账:窗起点不早于 v0.3 生效时刻(升级前那半天的
     # 「没人理」不算账;observer 观察行照旧,只有摩擦账收这个闸)
     v3 = child_mod._rules_v3_since(conn, child_id)
-    day0 = max(_midnight(t), v3)
-    gap = quiet_gap_seconds(conn, child_id, day0, t)
+    gap = quiet_gap_seconds(conn, child_id, _midnight(t), t, not_before=v3)
     if gap is None or gap < cfg.OBSERVE_QUIET_GAP_H * 3600:
         return False
     child_mod.apply_action(

@@ -58,11 +58,13 @@ def _obs_unfinished(conn, child_id: str, day0: float, t: float):
     return texts.OBS_UNFINISHED if n >= 1 else None
 
 
-def quiet_gap_seconds(conn, child_id: str, day0: float, t: float) -> float | None:
+def quiet_gap_seconds(conn, child_id: str, day0: float, t: float,
+                      not_before: float = 0.0) -> float | None:
     """白天(07:00 起)最长无人互动间隔的**公共口径**(观察行与摩擦轴「被晾」
     共用同一判定,统计不重造)。返回间隔秒数;白天窗还没开/窗内有 fired 夜哭
-    (他真闹过,不算被晾)=None。"""
-    start = day0 + 7 * 3600
+    (他真闹过,不算被晾)=None。not_before=窗起点的额外下限(摩擦轴传 v0.3
+    升级戳:升级当日已过去的时段不算「被晾」;观察行不传=口径不变)。"""
+    start = max(day0 + 7 * 3600, not_before)
     if t <= start:
         return None
     stamps = [start] + [r["effective_at"] for r in conn.execute(
@@ -89,7 +91,7 @@ def _obs_quiet(conn, child_id: str, day0: float, t: float):
 
 
 def _obs_diary(conn, child_id: str, day0: float, t: float):
-    """日记上锁片段(,teen 限定):从他**当日 accepted utterance** 里取一句
+    """日记上锁片段(teen 限定):从他**当日 accepted utterance** 里取一句
     真话,遮一半字符——「他的日记你只能看到一角」。真数据不编,没说过话=不发。
     取句确定性(最长优先,平手取最新),同日重算同一句。"""
     from . import child as child_mod
@@ -180,7 +182,7 @@ def _obs_taught_word(conn, child_id: str, day0: float, t: float):
 
 
 def _obs_asks(conn, child_id: str, day0: float, t: float):
-    """今天他主动来找人的战报(,吃settle 真账;零条=不发)。"""
+    """今天他主动来找人的战报(吃 settle 真账;零条=不发)。"""
     rows = conn.execute(
         "SELECT status FROM scheduled_event WHERE child_id=? AND kind='ask'"
         " AND status IN ('settled_hit','settled_miss')"

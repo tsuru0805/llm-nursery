@@ -7,7 +7,7 @@
   · swear(触发型):偷学进账(source_kind='archive')命中 SWEAR_WORDS 词表
     → 立刻开一道「管/笑」,幂等键 choice:swear:{词}=每词一生一次。
   · lottery(抽签型):(child,模板,date) 种子日抽签,**每模板一生一次**
-    (同一幕两难重播必穿帮,总纲3;池子靠加模板扩)。
+    (同一幕两难重播必穿帮(设计原则);池子靠加模板扩)。
 - fire_due_choices:到点触发→outbox kind='nursery.choice'(payload 全 str 平铺,
   接入层 validate_event 起手集);场景稿含 {voice} 的让他真实开口(child_speak,
   失败=兜底稿)。outbox.expires_at=响应窗关点(窗关没投出去的不补播)。

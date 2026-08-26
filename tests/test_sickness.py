@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.3:生病 arc(M7)。全部临时 db,假时钟注入。
+"""v0.3:生病 arc。全部临时 db,假时钟注入。
 
 抽签概率钉 1.0 免抖动;onset/夜叫时刻是 (child,date) 种子内的均匀抽签,
 断言只钉窗口边界(08-20 / 03-06)不钉具体时刻。
@@ -258,7 +258,7 @@ def test_tick_sickness_runs_and_fail_open(conn, sick_kid, monkeypatch):
 
 
 def test_sick_care_counts_mama_actions(conn, sick_kid):
-    """0825:妈妈的照顾(mama_hug/mama_soothe/mama_touch)病窗内同吃 sick_care
+    """妈妈的照顾(mama_hug/mama_soothe/mama_touch)病窗内同吃 sick_care
     加成,每病日每类一次(与 feed/soothe 同形制)。"""
     cid, brain = sick_kid
     sickness.fire_due_sickness(conn, brain, cid, now=_jst("2026-07-22", 23))

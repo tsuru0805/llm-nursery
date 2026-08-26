@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.3:选择题事件(机制 M3)。全部临时 db,假时钟注入。"""
+"""v0.3:选择题事件。全部临时 db,假时钟注入。"""
 import json
 
 import pytest
@@ -130,14 +130,14 @@ def test_fire_emits_flat_str_wire(kid, conn, monkeypatch):
     assert p["choice_id"] == str(ev["id"])
     assert p["option_a"] == texts.CHOICE_OPTIONS[("swear", "a")]
     assert p["option_b"] == texts.CHOICE_OPTIONS[("swear", "b")]
-    # gateway validate_event 起手集全 str:注册表字段一个数字都不许漏进去
+    # 接入层起手集全 str:注册表字段一个数字都不许漏进去
     for k in ("title", "text", "choice_id", "option_a", "option_b",
               "window_until"):
         assert isinstance(p[k], str), k
     assert p["window_until"] == str(int(ev["expires_at"]))
     assert not [k for k in p if k.startswith("_")]   # 内部槽位不上 wire
     # 契约=「字段是 str 或干脆没有」:None 不上 wire(swear 无 voice=键缺席,
-    # 不靠 gateway 收件侧剔形状——评审定案)
+    # 不靠接入层收件侧剔形状——评审定案)
     assert "voice" not in p
     assert not [k for k, v in p.items() if v is None]
     # 二次触发不重复
@@ -555,7 +555,7 @@ def test_crash_recovery_keeps_winner_identity(kid, conn, monkeypatch):
 
 
 def test_mama_resolution_notifies_papa(kid, conn, monkeypatch):
-    """0824 缺口回归:妈妈拍板→事件进 outbox(注入管道到papa);爸爸自拍不通报;幂等。"""
+    """拍板通报回归:妈妈拍板→事件进 outbox(注入管道到papa);爸爸自拍不通报;幂等。"""
     cid, brain = kid
     _only_swear(monkeypatch)
     _steal_swear(conn, brain, cid)

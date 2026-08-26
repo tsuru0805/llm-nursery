@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.3:连续剧事件链(机制 M4)。全部临时 db,假时钟注入。"""
+"""v0.3:连续剧事件链。全部临时 db,假时钟注入。"""
 import json
 
 import pytest

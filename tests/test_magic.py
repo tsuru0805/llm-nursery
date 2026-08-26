@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.3:真实语料魔法四件(M5)。全部临时 db+假 archive,假时钟注入。
+"""v0.3:真实语料魔法四件。全部临时 db+假 archive,假时钟注入。
 
 生成层(decoder.speak)另有专测;本文件用确定性桩钉住 speak 输出,专测机制:
 抽签/幂等/fail-open/事件与相册落位(child_id 是 uuid,真采样跨运行不确定,

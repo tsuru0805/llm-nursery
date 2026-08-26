@@ -266,3 +266,53 @@ def test_tick_survives_new_mechanism_failure(saves, monkeypatch,
                              now=T0 + 3600)
     # 炸的那件空手而归,但事件系统与投递面照常存在
     assert "events" in out and "outbox" in out
+
+
+# ── 升级当日不翻旧账:被晾窗与唠叨免费额都从升级戳起算 ──
+
+def test_upgrade_day_quiet_window_starts_at_stamp(tmp_path):
+    from nursery import friction
+    import time as _time
+    p = _make_v8_db(str(tmp_path / "old.db"))
+    conn = pdb.connect(p)
+    # 用真实墙钟摆一个「今天 21:30、白天全程没人理」的场景:
+    # 升级戳=今天 15:00 → 只有 15:00-21:30 算窗(6.5h≥6h 会hit),
+    # 但把戳挪到 16:00 → 窗只剩 5.5h(<6h)= 不该记「被晾」
+    lt = _time.localtime()
+    day0 = _time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    t_eval = day0 + 21.5 * 3600
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE parenting_meta SET value=? WHERE child_id='oldkid'"
+                 " AND key='rules_v3_since'", (repr(day0 + 16 * 3600),))
+    # 让他在 teen(v1 表 24-36 天):born_at 挪到 30 天前
+    conn.execute("UPDATE child SET born_at=? WHERE child_id='oldkid'",
+                 (t_eval - 30 * DAY,))
+    conn.commit()
+    assert friction._quiet_annoyance(conn, "oldkid", t_eval) is False
+    # 戳挪回 15:00:窗 6.5h ≥ 阈值,正常记账(升级后被晾照算)
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE parenting_meta SET value=? WHERE child_id='oldkid'"
+                 " AND key='rules_v3_since'", (repr(day0 + 15 * 3600),))
+    conn.commit()
+    assert friction._quiet_annoyance(conn, "oldkid", t_eval) is True
+    conn.close()
+
+
+def test_upgrade_day_nag_quota_ignores_pre_upgrade_actions(tmp_path):
+    p = _make_v8_db(str(tmp_path / "old.db"))
+    conn = pdb.connect(p)
+    t_upgrade = T0 + 25 * DAY + 12 * 3600   # teen 期某天中午升级
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE parenting_meta SET value=? WHERE child_id='oldkid'"
+                 " AND key='rules_v3_since'", (repr(t_upgrade),))
+    conn.commit()
+    # 升级前同日 talk 三次(免费额=3;若被计入,升级后第一次 talk 就该攒烦)
+    for i in range(3):
+        child_mod.apply_action(conn, "oldkid", "papa", "talk",
+                               idempotency_key=f"pre{i}",
+                               now=t_upgrade - 3600 + i * 60)
+    child_mod.apply_action(conn, "oldkid", "papa", "talk",
+                           idempotency_key="post1", now=t_upgrade + 600)
+    st = child_mod.read_state(conn, "oldkid", now=t_upgrade + 600, persist=False)
+    assert st.get("annoyance", 0.0) == 0.0   # 升级前的唠叨不翻旧账
+    conn.close()

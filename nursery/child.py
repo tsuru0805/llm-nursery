@@ -379,11 +379,12 @@ def _rules_v3_since(conn: sqlite3.Connection, child_id: str) -> float:
 
 
 def _daily_repeat_count(conn: sqlite3.Connection, child_id: str, kind: str,
-                        t: float) -> int:
-    """当日(本地零点起,且不早于 RULES_V2_SINCE)已落账的同类动作次数。
+                        t: float, not_before: float = 0.0) -> int:
+    """当日(本地零点起,且不早于 RULES_V2_SINCE/not_before)已落账的同类动作次数。
     幂等重放在上层早退不进这里,不会虚增;当前动作尚未插入,<=t 不含自己,
-    同秒已提交的动作也计入。"""
-    day0 = max(_local_midnight(t), _rules_v2_since(conn, child_id))
+    同秒已提交的动作也计入。not_before=额外下限(摩擦轴唠叨账传 v0.3 升级戳:
+    升级前同日的动作不进免费额计数——不翻旧账)。"""
+    day0 = max(_local_midnight(t), _rules_v2_since(conn, child_id), not_before)
     return conn.execute(
         "SELECT COUNT(*) FROM action_log WHERE child_id=? AND kind=?"
         " AND effective_at>=? AND effective_at<=?",
@@ -460,8 +461,9 @@ def _apply_action_locked(conn: sqlite3.Connection, child_id: str, actor: str, ki
                                 ensure_ascii=False), t, t + 86400, olive_idem))
             elif kind in cfg.ANNOY_NAG_KINDS:
                 # 唠叨:当日同类超过免费额的部分才涨(复用 _daily_repeat_count,
-                # 与同口径:不含本次,同秒已提交计入)
-                n29 = _daily_repeat_count(conn, child_id, kind, t)
+                # 同口径:不含本次,同秒已提交计入;升级前同日动作不进计数)
+                n29 = _daily_repeat_count(conn, child_id, kind, t,
+                                          not_before=_rules_v3_since(conn, child_id))
                 if n29 >= cfg.ANNOY_NAG_FREE:
                     effects["annoyance"] = effects.get("annoyance", 0.0) + \
                         cfg.ANNOY_NAG_STEP * \
