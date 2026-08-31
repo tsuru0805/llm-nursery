@@ -320,11 +320,14 @@ def build_input(conn, child_id: str, child_row, stage: str, t: float) -> tuple:
     return digest, valid_ids, prompt
 
 
-def _ds_complete(prompt: str, *, timeout: float | None = None) -> dict:
+def _ds_complete(prompt: str, *, timeout: float | None = None,
+                 max_tokens: int | None = None,
+                 temperature: float | None = None) -> dict:
     """真 DS 调用(OpenAI 兼容 /chat/completions,纯 urllib 零依赖)。
     默认 DeepSeek;env DEEPSEEK_BASE / PSYCHE_DS_MODEL 可指向任何 OpenAI 兼容端点。
     注:DeepSeek V4 必须显式 thinking disabled,否则小 max_tokens 下 content 恒空。
-    测试永不走到这里(maybe_decide 注入 ds_complete mock)。"""
+    测试永不走到这里(maybe_decide 注入 ds_complete mock)。
+    v0.4:letters 复用本底座(max_tokens/temperature 参数化,默认=psyche 档)。"""
     key = os.getenv("DEEPSEEK_API_KEY", "")
     if not key:
         raise RuntimeError("DEEPSEEK_API_KEY 未配置")
@@ -332,8 +335,10 @@ def _ds_complete(prompt: str, *, timeout: float | None = None) -> dict:
     model = os.getenv("PSYCHE_DS_MODEL", cfg.PSYCHE_DS_MODEL_DEFAULT)
     body = {"model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": cfg.PSYCHE_DS_TEMPERATURE,
-            "max_tokens": cfg.PSYCHE_DS_MAX_TOKENS,
+            "temperature": (cfg.PSYCHE_DS_TEMPERATURE if temperature is None
+                            else temperature),
+            "max_tokens": cfg.PSYCHE_DS_MAX_TOKENS if max_tokens is None
+            else max_tokens,
             "thinking": {"type": "disabled"}}
     req = urllib.request.Request(
         f"{base}/chat/completions",

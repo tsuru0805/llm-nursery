@@ -245,8 +245,39 @@ SURPRISE_P_PER_TICK = 0.06      # 语出惊人:child/teen 期每 tick 概率
 SURPRISE_WEEK_QUOTA = {"child": 2, "teen": 2}
 SURPRISE_MIN_GAP_H = 24.0       # 两次引爆最小间隔(防几分钟连爆)
 SURPRISE_ANCHOR_MIN_RUN = 6     # 锚滤渣:锚只从 ≥此长度的纯话芯连续段里取
-ADULT_GRADUATE_DAYS = 1.5       # 进成年期后多少天到达毕业线(v0.3 起=只开告别门,不自动判)
-STAY_LINE_HOURS = 24.0          # 「再等一天」后,他只说那句话的时长
+# ── v0.4 毕业过渡:从成年到离家(替换 v0.3 告别门「行李收好等你按钮」)──
+# 设计核心:是他提出离开,照护人只决定什么时候准备好说「去吧」。成年日锚=孩子
+# 自己 policy 的 teen 上限(stage_schedule_for[-2][1],不硬编天数)。预告=成年日前
+# N 天;宣告=成年日当晚开告别窗;窗满没人开口=他自己告别(绝不系统代照护人说)。
+# 判定条件=窗开后任一照护人(或他自己)的 farewell 落账;判分五分支口径不变。
+PRE_FAREWELL_OFFSETS = (3.0, 2.0, 1.0)   # 成年日前 3/2/1 天各一条渐进预告
+LEAVING_ANNOUNCE_HOUR = 20      # 成年日 20 点(本地时)后他开口「我想出去住了」=窗开
+LEAVING_ANNOUNCE_MAX_LAG_DAYS = 1.0   # 兜底:成年满 1 天还没等到 20 点档(调度空窗)也开
+DEPARTURE_WINDOW_DAYS = 3.0     # 告别窗(纯缓冲期:无新养成任务,他还在家)
+FAREWELL_WINDOW_EVENT_HOUR = 9  # 窗口每日小变化的投放时段起点(本地时)
+
+# ── v0.4 成年书信线:离家后的往来 ─────────────────────────────
+# 幼年是养育,成年是通信。graduated≠结束:他离家生活,低频来信;照护者可写信,
+# 不即时回复,非严格一问一答。结局给整条线定基调(判分口径不动,只做消费端)。
+LETTER_TONE = {   # ending → 来信间隔(天,min/max)+回家探望日概率(月频/30)
+    "reconciled":     dict(gap=(4.0, 7.0),   visit_day_p=0.033),  # 月 ≈1 次
+    "hidden_reunion": dict(gap=(5.0, 8.0),   visit_day_p=0.033),
+    "precocious":     dict(gap=(5.0, 9.0),   visit_day_p=0.017),
+    "silent":         dict(gap=(8.0, 14.0),  visit_day_p=0.008),
+    "independent":    dict(gap=(10.0, 16.0), visit_day_p=0.004),
+}
+FIRST_LETTER_GAP_DAYS = (2.0, 4.0)   # 告别后第一封(=告别信,portrait 为唯一事实源)
+LETTER_REPLY_GAP_DAYS = (2.0, 5.0)   # 收到照护者来信后,下一封提前到这个窗
+LETTER_REPLY_P = 0.7                 # ……的概率(其余照常节奏:他有自己的生活)
+LETTER_RETRY_H = 4.0                 # 生成失败(LLM 挂)顺延时长,不空投不丢信
+LETTER_DELIVER_HOURS = (9, 22)       # 信只在白天到(半夜不惊动人)
+LETTER_MEMORY_P = 0.35               # 童年素材返流概率(自然写进信里,不渲染检索感)
+LETTER_VOICE_MAX = 2                 # 每封信嵌入他真实模型句上限(小时候的话漏出来)
+LETTER_DS_MAX_TOKENS = 900           # 信体生成预算(比 psyche 决策长)
+LETTER_DS_TEMPERATURE = 1.0          # 创意任务 >1.1 散架经验值,与 psyche 同档
+MAX_LETTER_LEN = 800                 # 照护者单封信正文上限(字)
+VISIT_COOLDOWN_DAYS = 21.0           # 两次回家探望最小间隔
+VISIT_STAY_HOURS = 20.0              # 探望停留:次日尾声(「他走了」)最早时刻
 
 # 每日随机事件池文案 → texts.DAILY_EVENTS(文案层);概率/日上限仍在本文件
 

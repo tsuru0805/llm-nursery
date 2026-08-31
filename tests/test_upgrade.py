@@ -144,14 +144,16 @@ def test_pause_gates_ending_until_resumed_and_matured(saves):
     child = child_mod.get_child(conn, cid)
     assert child_mod.stage_of(child, t_late) == "teen"
     assert child["status"] == "active" and not child["ending"]
-    # 解冻:逻辑年龄从 34 天续走,未满毕业线仍不判;走满+亲口 farewell 才判
+    # 解冻:逻辑年龄从 34 天续走,没到成年窗仍不判;v0.4=弧线开窗+告别才判
     child_mod.resume_child(conn, cid, now=t_late)
     assert events.judge_ending(conn, brain, cid, now=t_late + 1 * DAY) is None
-    assert events.judge_ending(conn, brain, cid, now=t_late + 4 * DAY - 120) is None
+    t_win = t_late + 3.2 * DAY            # 逻辑 37.2 天:成年满 1 天,lag 兜底开窗
+    events.tick_farewell_arc(conn, cid, now=t_win)
+    assert events.farewell_window(conn, cid) is not None
     child_mod.apply_action(conn, cid, "papa", "farewell",
-                           idempotency_key="fw3", now=t_late + 4 * DAY - 60)
+                           idempotency_key="fw3", now=t_win + 60)
     assert events.judge_ending(conn, brain, cid,
-                               now=t_late + 4 * DAY) == "reconciled"
+                               now=t_win + 120) == "reconciled"
     conn.close()
 
 

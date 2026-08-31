@@ -71,8 +71,9 @@ def test_response_rate_counts_only_night_windows(born):
                                idempotency_key=f"day-{i}", now=T0 + 12 * 3600 + i)
     conn.execute("UPDATE child_state SET intimacy=90, darkness=0, last_settled_at=?"
                  " WHERE child_id=?", (T0 + 37 * DAY, cid))
+    events.tick_farewell_arc(conn, cid, now=T0 + 37.2 * DAY)   # v0.4 lag 开窗
     assert events.judge_ending(conn, brain, cid, now=T0 + 38 * DAY - 120) is None
-    child_mod.apply_action(conn, cid, "papa", "farewell",   # 门开后亲口才判
+    child_mod.apply_action(conn, cid, "papa", "farewell",
                            idempotency_key="fw", now=T0 + 38 * DAY - 60)
     end = events.judge_ending(conn, brain, cid, now=T0 + 38 * DAY)
     assert end is not None

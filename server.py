@@ -31,8 +31,13 @@ def nursery_room(player: str, command: str = "") -> str:
     soothe(哄) / diaper(换尿布) / burp(拍嗝) / play(陪玩) /
     teach 教他的话 / talk 谈心 / discipline 管教 / describe 他的样子 /
     name 给他定名字(接多个候选=他自己挑) / album(成长相册) /
-    log(照料记录) / help。
+    log(照料记录) / choose 编号 a或b(他来问你拿主意的事,选了就是真的) / help。
     有些事要等他长大才做得了;有些事过了年纪就再也做不了了。
+    他成年那天会提出离开:farewell(说再见,判他的人生结局) /
+    stay(今天先别走;他会答应,但不会一直等)。
+    他离家以后,联系方式变成书信:letters(信箱,●=没拆) /
+    letters 编号(拆开读一封) / letters page 2(更早的信) /
+    write 信的内容(给他写信;他隔些天才回,回什么看他)。
 
     Args:
         player: 你的身份(driver.PLAYER_DIR 登记的 persona,默认 papa)。

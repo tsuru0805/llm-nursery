@@ -17,7 +17,7 @@ from . import driver
 from . import texts
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_MAX_CMD = 700   # feed 正文 cap 600 + 指令头富余
+_MAX_CMD = 900   # max(写信 800, feed 600) + 指令头富余(与 config.MAX_LETTER_LEN 对齐)
 _TIMEOUT = 20    # 子进程超时(秒;含模型装载)
 
 # 公开命令白名单(运维入口不放行;妈妈通道走接入层专口,不在此面)。
@@ -25,7 +25,8 @@ _TIMEOUT = 20    # 子进程超时(秒;含模型装载)
 _PUBLIC_CMDS = frozenset({
     "help", "status", "feed", "soothe", "diaper", "burp", "play", "teach",
     "talk", "discipline", "describe", "name", "album", "log",
-    "choose", "farewell", "stay",   # v0.3:两难拍板/结局日(阶段闸在 driver 层)
+    "choose", "farewell", "stay",   # 两难拍板/告别窗(阶段闸在 driver 层)
+    "letters", "write",             # v0.4:书信阶段信箱(读信/写信)
 })
 
 
@@ -53,10 +54,11 @@ def nursery(player: str, command: str = "") -> str:
     if head not in _PUBLIC_CMDS:
         return texts.TOOLFACE_UNKNOWN_CMD.format(cmd=head)
     body = body.strip()
-    if head in ("feed", "teach", "talk", "describe", "name"):
-        argv = [head] + ([body] if body else [])
-    elif head == "choose":
-        argv = [head] + body.split()[:2]   # choose <编号> <a|b>
+    if head in ("feed", "teach", "talk", "describe", "name", "write"):
+        argv = [head] + ([body] if body else [])   # write=v0.4 信正文整段直通
+    elif head in ("choose", "letters"):
+        # choose <编号> <a|b> / letters [编号 | page <n>]
+        argv = [head] + body.split()[:2]
     else:
         argv = [head]  # 其余命令不带参数,尾巴忽略
     try:

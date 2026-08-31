@@ -253,8 +253,11 @@ def test_ending_reconciled(born):
     conn.execute("UPDATE child_state SET intimacy=85, darkness=10 WHERE child_id=?",
                  (cid,))
     t_adult = T0 + 38 * DAY
-    assert events.judge_ending(conn, brain, cid, now=t_adult - 120) is None  # 只开门
-    child_mod.apply_action(conn, cid, "papa", "farewell",   # 门开后亲口才判
+    # v0.4:先走真弧线开窗(成年满 1 天=lag 兜底),告别后才判
+    events.tick_farewell_arc(conn, cid, now=T0 + 37.2 * DAY)
+    assert events.farewell_window(conn, cid) is not None
+    assert events.judge_ending(conn, brain, cid, now=t_adult - 120) is None
+    child_mod.apply_action(conn, cid, "papa", "farewell",
                            idempotency_key="fw", now=t_adult - 60)
     end = events.judge_ending(conn, brain, cid, now=t_adult)
     assert end == "reconciled"
@@ -282,8 +285,9 @@ def test_ending_independent_by_refusal(born):
             "INSERT INTO utterance(child_id, trigger, stage, text, accepted,"
             " rejection_reason, created_at) VALUES(?,?,?,?,0,'refused',?)",
             (cid, "t", "teen", "", T0 + i))
+    events.tick_farewell_arc(conn, cid, now=T0 + 37.2 * DAY)   # v0.4 lag 开窗
     assert events.judge_ending(conn, brain, cid, now=T0 + 38 * DAY - 120) is None
-    child_mod.apply_action(conn, cid, "papa", "farewell",   # 门开后亲口才判
+    child_mod.apply_action(conn, cid, "papa", "farewell",
                            idempotency_key="fw2", now=T0 + 38 * DAY - 60)
     assert events.judge_ending(conn, brain, cid, now=T0 + 38 * DAY) == "independent"
 

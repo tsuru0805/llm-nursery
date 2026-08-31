@@ -18,7 +18,7 @@ import time
 from . import child as child_mod
 from . import texts
 from .child import tx
-from .config import (ADULT_GRADUATE_DAYS, DAILY_EVENT_P,
+from .config import (DAILY_EVENT_P,
                      FIRST_SENTENCE_MIN_LEN, GIFT_EVENT_KEYS,
                      MILESTONE_NEW_CHARS_STEP, STAGE_CN, STAGE_SCHEDULE_V1,
                      SURPRISE_ANCHOR_MIN_RUN, SURPRISE_P_PER_TICK,
@@ -301,9 +301,13 @@ def check_stage_transition(conn, child_id: str, now=None) -> str | None:
             (child_id, f"appearance_{stage}")).fetchone()
         if has_look is None:
             note = texts.STAGE_APPEARANCE_INVITE
+    # v0.4:成年不是「长大了一点」——是成年日(当晚他会提出离开,tick_farewell_arc)
+    stage_title = (texts.COMING_OF_AGE_TITLE.format(name=name) if stage == "adult"
+                   else texts.MS_STAGE_TITLE.format(name=name,
+                                                    stage_cn=STAGE_CN[stage]))
     ok = _emit(conn, child_id, kind="nursery.milestone",
                item_kind=f"stage_{stage}",
-               title=texts.MS_STAGE_TITLE.format(name=name, stage_cn=STAGE_CN[stage]),
+               title=stage_title,
                note=note, payload={"stage": stage},
                idem=f"ms:stage:{stage}:{child_id}", t=t)
     # 生日 set-piece:阶段跃迁=过一次生日,全家出席。
@@ -560,40 +564,159 @@ def maybe_runaway(conn, child_id: str, rng: random.Random, now=None) -> bool:
     return True
 
 
+# ── v0.4 毕业过渡:告别窗(替换 v0.3 告别门) ──
+
+def _meta_get(conn, child_id: str, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM parenting_meta WHERE child_id=? AND key=?",
+                       (child_id, key)).fetchone()
+    return row["value"] if row is not None else None
+
+
+def farewell_window(conn, child_id: str) -> dict | None:
+    """告别窗状态:未开=None;开了={opened_at, opened_age}(opened_age=开窗时逻辑天,
+    窗末判定用它——冻龄时窗口时钟跟着停,绝对时刻只做展示)。"""
+    at = _meta_get(conn, child_id, "farewell_window_opened_at")
+    age = _meta_get(conn, child_id, "farewell_window_opened_age")
+    if at is None or age is None:
+        return None
+    return {"opened_at": float(at), "opened_age": float(age)}
+
+
+def in_departure_window(conn, child_id: str, now=None) -> bool:
+    """窗口静默闸:窗开着且还没告别(判完 ending 即不再算窗内)。
+    窗口期=纯缓冲:asks/choices/chains/magic/sickness/每日随机全不排新。"""
+    child = child_mod.get_child(conn, child_id)
+    if child["status"] != "active" or child["ending"]:
+        return False
+    return farewell_window(conn, child_id) is not None
+
+
+def _local_midnight_of(t: float) -> float:
+    lt = time.localtime(t)
+    return t - (lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec)
+
+
+def tick_farewell_arc(conn, child_id: str, now=None) -> dict:
+    """毕业过渡弧,每拍幂等推进:
+    ①成年日前 3/2/1 天渐进预告(他自己开始变化,不直说要走);
+    ②成年日当晚(≥20 点,或成年满 1 天兜底)他开口「我想出去住了」=告别窗开;
+    ③窗内每日一条小变化(纯氛围);
+    ④窗满 DEPARTURE_WINDOW_DAYS(逻辑天)没人开口 → 他自己告别(farewell 落账,
+      actor='self'——绝不系统代照护人说,是他自己说的)。
+    farewell/stay 指令语义在 driver;判结局在 judge_ending(同拍随后跑)。"""
+    from .config import (DEPARTURE_WINDOW_DAYS, FAREWELL_WINDOW_EVENT_HOUR,
+                         LEAVING_ANNOUNCE_HOUR, LEAVING_ANNOUNCE_MAX_LAG_DAYS,
+                         PRE_FAREWELL_OFFSETS)
+    t = _now(now)
+    out: dict = {}
+    child = child_mod.get_child(conn, child_id)
+    if child["status"] != "active" or child["ending"]:
+        return out
+    age = child_mod.logical_age_days(child, t)
+    adult_start = child_mod.stage_schedule_for(child)[-2][1]  # teen 上限=成年日
+    name = child["name"] or texts.DEFAULT_CHILD_NAME
+
+    # ① 渐进预告(还在 teen 末尾;幂等各一次;进相册=毕业叙事的一部分)
+    for i, off in enumerate(PRE_FAREWELL_OFFSETS, 1):
+        if adult_start - off <= age < adult_start:
+            if _emit(conn, child_id, kind="nursery.event",
+                     item_kind=f"pre_farewell_{i}",
+                     title=texts.PRE_FAREWELL_LINES[i - 1].format(name=name),
+                     note=None, payload={"farewell_arc": f"pre_{i}"},
+                     idem=f"prefw:{i}:{child_id}", t=t, expires_at=t + 86400):
+                out[f"pre_{i}"] = True
+
+    win = farewell_window(conn, child_id)
+
+    # ② 成年日当晚开窗(是他提出离开)。「白天正常过成年日→当晚他才开口」的
+    # 间隔要真实存在:成年跃迁事件落账 ≥2h 后才许宣告——防跃迁本身落在 20 点后
+    # 时,生日会与「我想出去住了」同拍双发;lag 兜底不受此限。
+    if win is None and age >= adult_start:
+        hour = time.localtime(t).tm_hour
+        adult_row = conn.execute(
+            "SELECT created_at FROM growth_album WHERE child_id=?"
+            " AND item_kind='stage_adult' LIMIT 1", (child_id,)).fetchone()
+        settled_in = adult_row is not None and \
+            t - adult_row["created_at"] >= 2 * 3600
+        if (hour >= LEAVING_ANNOUNCE_HOUR and settled_in) or \
+                age >= adult_start + LEAVING_ANNOUNCE_MAX_LAG_DAYS:
+            emitted = _emit(conn, child_id, kind="nursery.milestone",
+                            item_kind="leaving_announce",
+                            title=texts.LEAVING_ANNOUNCE_TITLE.format(name=name),
+                            note=texts.LEAVING_ANNOUNCE_NOTE,
+                            payload={"farewell_arc": "announce"},
+                            idem=f"leave:{child_id}", t=t)
+            # meta 锚在 _emit 之后无条件补写(幂等):上一拍崩在事件提交与锚写入
+            # 之间时,重放要能把锚补上——否则窗口永远开不了
+            with tx(conn):
+                for k, v in (("farewell_window_opened_at", str(t)),
+                             ("farewell_window_opened_age", str(age))):
+                    conn.execute(
+                        "INSERT INTO parenting_meta(child_id, key, value,"
+                        " updated_at) VALUES(?,?,?,?)"
+                        " ON CONFLICT(child_id, key) DO NOTHING",
+                        (child_id, k, v, t))
+            if emitted:
+                out["window_opened"] = True
+            win = farewell_window(conn, child_id)
+
+    if win is None:
+        return out
+
+    # ③ 窗内每日小变化(开窗后第 1/2/3 个本地日,白天投放;纯氛围幂等)
+    opened_day0 = _local_midnight_of(win["opened_at"])
+    for n in range(1, len(texts.FAREWELL_WINDOW_LINES) + 1):
+        due = opened_day0 + n * 86400 + FAREWELL_WINDOW_EVENT_HOUR * 3600
+        if t >= due:
+            if _emit(conn, child_id, kind="nursery.event", item_kind=None,
+                     title=texts.FAREWELL_WINDOW_LINES[n - 1].format(name=name),
+                     note=None, payload={"farewell_arc": f"window_{n}"},
+                     idem=f"fwwin:{n}:{child_id}", t=t, expires_at=t + 86400):
+                out[f"window_{n}"] = True
+
+    # ④ 窗满没人开口 → 他自己告别(逻辑天口径,冻龄安全;绝不代照护人说)。
+    # 事件在前、落账在后:两半各自幂等——先落账后崩=下一拍整块跳过,
+    # 「我走啦」那段叙事永久丢而结局照判;先发事件后崩=下一拍收敛无丢失。
+    if age >= win["opened_age"] + DEPARTURE_WINDOW_DAYS:
+        said = conn.execute(
+            "SELECT 1 FROM action_log WHERE child_id=? AND kind='farewell'"
+            " AND effective_at>=? LIMIT 1",
+            (child_id, win["opened_at"])).fetchone()
+        if said is None:
+            _emit(conn, child_id, kind="nursery.milestone",
+                  item_kind="self_farewell",
+                  title=texts.SELF_FAREWELL_TITLE.format(name=name),
+                  note=texts.SELF_FAREWELL_NOTE,
+                  payload={"farewell_arc": "self_farewell"},
+                  idem=f"selffw:ev:{child_id}", t=t)
+            child_mod.apply_action(conn, child_id, "self", "farewell",
+                                   idempotency_key=f"selffw:{child_id}",
+                                   payload={"self_farewell": True}, now=t)
+            out["self_farewell"] = True
+    return out
+
+
 def judge_ending(conn, brain, child_id: str, now=None) -> str | None:
-    """成年期满→五分支结局。只判定+落数据(告别信等文案归接入层自定)。"""
+    """告别之后→五分支结局。只判定+落数据。
+
+    v0.4 门条件:结局必须发生在明确告别之后,但**不要求由谁发起**——
+    告别窗开了(tick_farewell_arc)且窗开后存在任一照护人(或他自己
+    actor='self')的 farewell 落账即判。system 不算(数据层白名单)。
+    五分支判分口径与 v0.3 完全一致。"""
     t = _now(now)
     child = child_mod.get_child(conn, child_id)
     if child["status"] != "active" or child["ending"]:
         return None
     if child_mod.stage_of(child, t) != "adult":
         return None
-    age = child_mod.logical_age_days(child, t)
-    adult_start = child_mod.stage_schedule_for(child)[-2][1]  # teen 上限=adult 起点(按孩子的 policy)
-    if age < adult_start + ADULT_GRADUATE_DAYS:
+    win = farewell_window(conn, child_id)
+    if win is None:
         return None
-
-    # 毕业线只开「告别门」,**绝不自动开奖**——判定要等主照护人亲口 farewell。
-    # 「再等一天」(stay)不推迟任何时钟:门一直开着,他一直等;stay 的意义在
-    # child_speak(那一天他只说那句话)。门事件幂等一次;告别信正文=文案层可换。
-    gate_name = child["name"] or "孩子"
-    _emit(conn, child_id, kind="nursery.milestone", item_kind="farewell_gate",
-          title=texts.FAREWELL_GATE_TITLE.format(name=gate_name),
-          note=texts.FAREWELL_GATE_NOTE, payload={"gate": "farewell"},
-          idem=f"fwgate:{child_id}", t=t)
-    # farewell 有效性钉死:门开之后+主照护人槽位(bond 两槽映射到 papa 的
-    # actor 才算——妈妈通道/system 不能替他说再见)+不晚于判定时刻。
-    from .bond import _caregiver_of
-    gate_row = conn.execute(
-        "SELECT created_at FROM growth_album WHERE child_id=?"
-        " AND item_kind='farewell_gate' LIMIT 1", (child_id,)).fetchone()
-    if gate_row is None:
-        return None
-    fw_rows = conn.execute(
-        "SELECT actor FROM action_log WHERE child_id=? AND kind='farewell'"
-        " AND effective_at>=? AND effective_at<=?",
-        (child_id, gate_row["created_at"], t)).fetchall()
-    if not any(_caregiver_of(r["actor"], "farewell") == "papa" for r in fw_rows):
+    if conn.execute(
+            "SELECT 1 FROM action_log WHERE child_id=? AND kind='farewell'"
+            " AND actor!='system'"
+            " AND effective_at>=? AND effective_at<=? LIMIT 1",
+            (child_id, win["opened_at"], t)).fetchone() is None:
         return None
 
     st = child_mod.read_state(conn, child_id, now=t, persist=False)
@@ -653,6 +776,13 @@ def judge_ending(conn, brain, child_id: str, now=None) -> str | None:
                      title=texts.MS_ENDING_TITLE.format(name=name),
                      note=texts.ENDING_CN.get(ending),   # 判了哪个结局要说人话
                      payload=data, idem=f"end:{child_id}", t=t)
+    # 毕业画像快照钉在判定时刻(告别信=第一封信的唯一事实源;拖到写信时才建
+    # =state 已衰减)。失败不挡结局;首封信生成时兜底重建(brain 缺=不落缓存)。
+    try:
+        from .letters import graduation_portrait
+        graduation_portrait(conn, brain, child_id, t)
+    except Exception:
+        pass
     return ending
 
 
@@ -671,9 +801,17 @@ def tick_events(conn, brain, child_id: str, now=None) -> dict:
     neglect = check_neglect(conn, child_id, now=t)
     if neglect:
         out["neglect"] = neglect
-    ev = maybe_daily_event(conn, child_id, rng, now=t, brain=brain)
-    if ev:
-        out["daily"] = ev
+    # v0.4 毕业过渡弧(预告/宣告开窗/窗口线/窗末他自告别;全幂等)
+    arc = tick_farewell_arc(conn, child_id, now=t)
+    if arc:
+        out["farewell_arc"] = arc
+    # 告别窗内=纯缓冲期:每日随机事件不抽(窗口有自己的小变化,不混台)
+    if not in_departure_window(conn, child_id, now=t):
+        ev = maybe_daily_event(conn, child_id, rng, now=t, brain=brain)
+        if ev:
+            out["daily"] = ev
+    else:
+        ev = None
     sp = maybe_surprise(conn, brain, child_id, rng_sp, now=t)
     if sp:
         out["surprise"] = True

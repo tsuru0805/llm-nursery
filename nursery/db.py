@@ -11,7 +11,33 @@ from __future__ import annotations
 import sqlite3
 import time
 
-SCHEMA_VERSION = 11  # v2: outbox.expires_at;v3: darkness 等;v4: appearance;v5: psyche 三表;v6: digest_load;v7: scene+chunk_index+parenting_meta;v8: caregiver_bond 两表;v9: annoyance 摩擦轴;v10: 小本子时间窗索引;v11: scheduled_event(child,kind,status) 索引(sickness 开窗挂 child_speak 热路径)
+SCHEMA_VERSION = 12  # v2: outbox.expires_at;v3: darkness 等;v4: appearance;v5: psyche 三表;v6: digest_load;v7: scene+chunk_index+parenting_meta;v8: caregiver_bond 两表;v9: annoyance 摩擦轴;v10: 小本子时间窗索引;v11: scheduled_event(child,kind,status) 索引;v12: letters 成年书信(v0.4)
+
+# ── v12(v0.4 成年书信)DDL:_SCHEMA(新库)与迁移(旧库)共用 ──
+# letters = 离家后的书信往来。in=他寄回来的(scheduled→delivered);
+# out=照护者寄出去的(sent)。寄出的信**不进语料**——他毕业了,模型冻结,
+# 信只进下一封来信的素材池(sources_json 留痕)。read_at=in 信首次被读的时刻。
+_LETTERS_DDL = [
+    """CREATE TABLE IF NOT EXISTS letters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    child_id   TEXT NOT NULL REFERENCES child(child_id),
+    direction  TEXT NOT NULL CHECK(direction IN ('in','out')),
+    author     TEXT NOT NULL,
+    body       TEXT NOT NULL DEFAULT '',
+    sources_json TEXT,
+    status     TEXT NOT NULL DEFAULT 'delivered'
+        CHECK(status IN ('scheduled','delivered','sent')),
+    due_at     REAL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    delivered_at REAL,
+    read_at    REAL,
+    idempotency_key TEXT NOT NULL,
+    UNIQUE(child_id, idempotency_key)
+)""",
+    """CREATE INDEX IF NOT EXISTS idx_letters_child
+    ON letters(child_id, direction, created_at)""",
+]
 
 # ── v5(LLM 心理层)三表 DDL:_SCHEMA(新库)与迁移(旧库)共用同一权威源 ──
 # psyche_axis      = 三轴当前值(不安/独立/自尊,0-100;黑暗值仍在 child_state,DS 只读不写)
@@ -251,7 +277,7 @@ CREATE TABLE IF NOT EXISTS growth_album (             -- 成长相册:第一次�
     pinned_at REAL
 );
 """ + ";\n".join(_PSYCHE_DDL) + ";\n" + ";\n".join(_CHUNK_DDL) + ";\n" + \
-    ";\n".join(_BOND_DDL) + ";\n"
+    ";\n".join(_BOND_DDL) + ";\n" + ";\n".join(_LETTERS_DDL) + ";\n"
 
 
 def connect(db_path: str) -> sqlite3.Connection:
@@ -334,6 +360,10 @@ def connect(db_path: str) -> sqlite3.Connection:
                 # sickness 开窗查询挂 child_speak 热路径的索引
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_sched_child_kind"
                              " ON scheduled_event(child_id, kind, status)")
+            if ver < 12:
+                # v0.4 成年书信:letters 表(纯新增,老档零触碰)
+                for ddl in _LETTERS_DDL:
+                    conn.execute(ddl)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.commit()
         except BaseException:

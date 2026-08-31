@@ -27,7 +27,7 @@ SWEAR = "卧槽"   # 词表内(config.SWEAR_WORDS),测试钉死这个词
 
 @pytest.fixture(autouse=True)
 def _v1_rules(monkeypatch):
-    """钉 v1 状态规则(同 test_parenting_asks.py 口径):只测选择题机制本身。"""
+    """钉 v1 状态规则(同 test_asks.py 口径):只测选择题机制本身。"""
     monkeypatch.setattr(cfg, "RULES_V2_SINCE", float("inf"))
 
 
@@ -185,7 +185,7 @@ def test_choose_scold_suppresses_word_and_costs_esteem(kid, conn, monkeypatch):
     ev = _fire_one(conn, brain, cid, now=NOW + 80)
     r = choices.resolve_choice(conn, brain, cid, ev["id"], "a", now=NOW + 600)
     assert r["status"] == "ok" and r["kind"] == "choice_scold"
-    # 动作账:actor=dawn,幂等键=事件级
+    # 动作账:actor=papa,幂等键=事件级
     row = conn.execute("SELECT actor, payload_json FROM action_log WHERE"
                        " kind='choice_scold'").fetchone()
     assert row["actor"] == "papa"

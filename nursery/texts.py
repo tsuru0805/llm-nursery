@@ -313,14 +313,67 @@ NOTEBOOK_MOOD = {   # 不安趋势方向 → 旁观一笔(flat=不加话)
 BIRTHDAY_TITLE = "{name}的{stage_cn}生日会"
 BIRTHDAY_NOTE = "家里人都到齐了。蛋糕上的蜡烛,他吹了两次才吹灭。"
 
-# ══════════════ 结局日交互 ══════════════
+# ══════════════ v0.4 毕业过渡:从成年到离家 ══════════════
+# (v0.3 告别门「行李收好等你按钮」退役——那一版把「按下按钮送走孩子」的
+#  负罪感全压在照护人身上。v0.4:是他提出离开,你只决定什么时候说「去吧」。)
 
-FAREWELL_GATE_TITLE = "{name}把自己的东西收拾好了。"
-FAREWELL_GATE_NOTE = ("他没说要走,也没说不走,就坐在那儿等你。"
-                      "(说再见=farewell;再陪他一天=stay。不选,他就一直等。)")
-STAY_LINE = "爸,我还能再当一天你的小孩吗。"
-FAREWELL_STAY_REPLY = "他愣了一下,把书包又放回了原处。"
-FAREWELL_GO_REPLY = "他点点头,站起来,把每个人都看了一遍。"
+# 渐进预告(成年日前 3/2/1 天;他自己开始变化,不直说要走)
+PRE_FAREWELL_LINES = (
+    "{name}最近开始自己整理东西。问他在做什么,他说:「没什么。」",
+    "{name}把小时候的东西翻了出来。有些留下了,有些收进了箱子。",
+    "「我要是自己住,」{name}顿了一下,「应该也行吧。」",
+)
+# 成年日(阶段跃迁标题的 adult 特版;生日会照旧)
+COMING_OF_AGE_TITLE = "今天{name}成年了。"
+# 成年日当晚:是他提出离开(告别窗从这里开)
+LEAVING_ANNOUNCE_TITLE = "晚上,{name}把你叫住了。"
+LEAVING_ANNOUNCE_NOTE = ("「我想出去住了。」\n"
+                         "他说完就看着你,不催,也不收回。\n"
+                         "(说再见=farewell;今天先别走=stay。他不会一直等。)")
+# 告别窗每日小变化(窗开后第 1/2/3 天各一条;纯氛围,不带任务)
+FAREWELL_WINDOW_LINES = (
+    "箱子一直放在门边。",
+    "{name}今天做的饭,多做了一份。",
+    "晚上路过{name}的房间,灯还亮着。",
+)
+# stay=照护人说「今天先别走」;他答应,不是他求(可多次用,不延总窗)
+FAREWELL_STAY_REPLY = "「好。」他把门边的箱子往里挪了挪。「那就明天。」"
+# farewell=「我知道了。去吧。」(那句话是你说的,指令本身就是它;这里只写他的反应)
+FAREWELL_GO_REPLY = "他点点头,把每个人都看了一遍。\n「到了我会写信的。」"
+# 窗满没人开口=他自己告别(绝不系统代照护人说)
+SELF_FAREWELL_TITLE = "{name}把钥匙放在了桌上。"
+SELF_FAREWELL_NOTE = ("「你们大概不知道怎么开口。」他笑了一下。「那我来说。」\n"
+                      "「我走啦。到了我会写信的。」")
+
+# ══════════════ v0.4 成年书信线(通知只说有信,正文在信箱——等待是玩法) ══════════════
+LETTER_ARRIVE_TITLE = "有你们的信。"
+LETTER_SENT_REPLY = "信寄出去了。什么时候回、回什么,都看他。"
+VISIT_TITLE = "{name}今天回来了。"
+VISIT_TREASURE_NOTE = "「这个你居然还留着。」"
+VISIT_END_TITLE = "他走了。"
+VISIT_END_NOTE = "桌上的旧玩具不见了。"
+# graduated 信箱形态文案
+AWAY_STATUS_HEAD = "{name} · 已经搬出去住了。"
+AWAY_LAST_LETTER = "上次来信:{days} 天前。"
+AWAY_LAST_LETTER_TODAY = "今天刚来过信。"
+AWAY_NO_LETTER_YET = "还没来过信。他说过,到了会写的。"
+AWAY_TALK_HINT = "他不住在这儿了。想跟他说话——write 给他写信吧。"
+AWAY_HELP = ("{name}不住在这儿了,这里剩下的:letters(信箱列表)/"
+             " letters <编号>(拆开读一封)/ letters page 2(更早的信)/"
+             " write <信的内容>(给他写信)/ album / log。"
+             "写了信他不会马上回——他有自己的日子了。")
+AWAY_QUIET = "屋里安安静静的。东西都还在,人已经去过自己的日子了。"
+NOT_AWAY_HINT = "{name}还住在这儿呢。想跟他说话,talk 就行——写信是他离家以后的事。"
+AWAY_VISIT_TALK = "难得他在家。"
+AWAY_VISIT_REFUSED = "{name}听着,笑了笑,没接话。"
+# 无 LLM key 时的降级模板信(纯本地拼装;有 key=LLM 起草,质感完整版)
+LETTER_LOCAL_TEMPLATES = (
+    "这边都安顿好了。{memory_line}最近没什么大事,吃得好,睡得也还行。{voice_line}别惦记。",
+    "搬来之后一直想写点什么,坐下来又不知道从哪说。{memory_line}{voice_line}都挺好的。",
+    "今天休息,把屋子收拾了一遍。{memory_line}{voice_line}你们那边怎么样。",
+)
+LETTER_LOCAL_MEMORY = "前两天不知怎么想起你们说过的:「{text}」。"
+LETTER_LOCAL_VOICE = "小时候我老说「{text}」,现在想想有点好笑。"
 
 # ══════════════ 结局正文(判了哪个结局要说人话) ══════════════
 
@@ -357,8 +410,8 @@ RUNAWAY_CALL_OK = ("……电话通了。那头安静了几秒。\n"
 RUNAWAY_CALL_NO_ECHO = ("你的话发出去了,没有回音。(离线第 {hours:.0f} 小时)\n"
                         "也许——把你以前对他说过的话,原样再说一遍。")
 RUNAWAY_UNREACHABLE = "打不通。他的推理端不在线。"
-GRADUATED_TALK = "{name}已经不住在摇篮房了。(成年后的对话形态还没做,等他安顿好。)"
-GRADUATED_QUIET = "摇篮房安安静静的。{name}长大了,东西还在,人去上自己的人生了。"
+# (v0.3 GRADUATED_TALK/GRADUATED_QUIET 已退役——成年后的形态=v0.4 书信阶段,
+#  文案见上方 AWAY_* 族。)
 
 # ══════════════ 接入面(toolface / MCP) ══════════════
 

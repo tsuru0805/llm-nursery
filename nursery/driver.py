@@ -55,7 +55,9 @@ MAX_NAME_LEN = 6     # 单个名字候选上限(字)
 
 # ── 妈妈通道(第二照护人的互动;主照护人指令白名单里没有 mama)──
 MAMA_ACTOR = "mama"        # action_log.actor / corpus_item.speaker 同口径
-MAMA_SUBCMDS = frozenset({"hug", "soothe", "touch", "say", "choose"})
+# farewell/stay=v0.4 告别窗(窗内谁说都算数);write/letters=书信阶段信箱口
+MAMA_SUBCMDS = frozenset({"hug", "soothe", "touch", "say", "choose",
+                          "farewell", "stay", "write", "letters"})
 MAX_MAMA_SAY_LEN = 500     # 说给他听正文上限(接入层同值)
 
 # 动作解锁表:阶段 gate(成长的仪式感;越阶调用给打趣文案不报错)。
@@ -138,9 +140,58 @@ def _mama_dispatch(conn, child, argv: list, t: float) -> str:
     if child is None:
         return out(False, error="no_child")
     if child["status"] != "active":
-        return out(False, error=child["status"])   # runaway / graduated
+        # v0.4:他回来探望那天,妈妈也能说上话(say 放行;其余照关)
+        if child["status"] == "graduated" and sub == "say":
+            from .letters import in_visit
+            if in_visit(conn, child["child_id"], now=t):
+                cid = child["child_id"]
+                text = " ".join(argv[1:]).strip()
+                if not text:
+                    return out(False, error="empty_text")
+                if len(text) > MAX_MAMA_SAY_LEN:
+                    return out(False, error="too_long")
+                brain_v = child_mod.ChildBrain.load(conn, cid)
+                child_mod.apply_action(conn, cid, MAMA_ACTOR, "mama_say",
+                                       idempotency_key=_idem("mama_say", t),
+                                       now=t)   # 成年了,不再进语料——话是说给他听的
+                res = child_mod.child_speak(conn, brain_v, cid,
+                                            trigger="mama_say", now=t)
+                return out(True, action="say", visiting=True,
+                           said=None if res.refused else res.text)
+            return out(False, error="graduated")
+        # v0.4:书信阶段信箱口照开(graduated 只放 write/letters)
+        if child["status"] == "graduated" and sub in ("write", "letters"):
+            from .letters import mailbox_summary, write_letter
+            cid = child["child_id"]
+            if sub == "letters":
+                return out(True, action="letters",
+                           **mailbox_summary(conn, cid, now=t, limit=10))
+            text = " ".join(argv[1:]).strip()
+            r = write_letter(conn, cid, MAMA_ACTOR, text, now=t)
+            if not r["ok"]:
+                return out(False, error=r["error"])
+            return out(True, action="write", sent=r["sent"])
+        return out(False, error=child["status"])   # runaway / 未毕业面照旧
     cid = child["child_id"]
     brain = child_mod.ChildBrain.load(conn, cid)
+
+    if sub in ("write", "letters"):
+        # 信箱是离家后的事——他还在家(active)时用 say,不写信
+        return out(False, error="not_away")
+
+    if sub in ("farewell", "stay"):
+        # v0.4:告别窗内她也能说(谁先说算谁的;窗没开=not_yet)
+        from .events import farewell_window, judge_ending
+        if farewell_window(conn, cid) is None:
+            return out(False, error="not_yet")
+        child_mod.apply_action(conn, cid, MAMA_ACTOR, sub,
+                               idempotency_key=_idem(sub, t), now=t)
+        if sub == "stay":
+            return out(True, action="stay", line=texts.FAREWELL_STAY_REPLY)
+        ending = judge_ending(conn, brain, cid, now=t)
+        return out(True, action="farewell", ending=ending,
+                   line=texts.FAREWELL_GO_REPLY,
+                   ending_cn=texts.ENDING_CN.get(ending) if ending else None)
 
     if sub == "say":
         text = " ".join(argv[1:]).strip()
@@ -251,14 +302,83 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
             return texts.RUNAWAY_STATUS.format(name=name, hours=hours)
         return texts.RUNAWAY_UNREACHABLE
 
-    # 已毕业:摇篮房只剩相册和回忆
+    # v0.4:已毕业=书信阶段。相册/记录永远可看;数值面板整个不渲——
+    # 他过得怎么样,只能从他的信里读(设计红线:成年不做第二套养成)。
     if child["status"] == "graduated":
+        from .letters import in_visit, mailbox_summary, read_one_letter, \
+            write_letter
         if cmd in ("album", "log"):
             pass  # 相册/记录永远可看
+        elif cmd == "help":
+            return texts.AWAY_HELP.format(name=name)
         elif cmd == "talk":
-            return texts.GRADUATED_TALK.format(name=name)
+            # 他回来探望的那一天,能说上话(少量互动,不恢复幼年玩法)
+            if in_visit(conn, cid, now=t):
+                brain_v = child_mod.ChildBrain.load(conn, cid)
+                child_mod.apply_action(conn, cid, PLAYER_DIR[persona], "talk",
+                                       idempotency_key=_idem("talk", t), now=t)
+                res = child_mod.child_speak(conn, brain_v, cid, trigger="talk",
+                                            now=t)
+                if res.refused:
+                    return texts.AWAY_VISIT_REFUSED.format(name=name)
+                return f"{texts.AWAY_VISIT_TALK}\n{_speak_line(res, name)}"
+            return texts.AWAY_TALK_HINT
+        elif cmd in ("status", "letters"):
+            from datetime import datetime as _dt
+            who = {"self": name, "papa": "爸爸", "mama": "妈妈"}
+            parts = rest.split()
+            # letters <编号> = 读某封(in 信首次读=销未读)
+            if cmd == "letters" and parts and parts[0].isdigit():
+                r = read_one_letter(conn, cid, int(parts[0]), now=t)
+                if r is None:
+                    return "没有这个编号的信。letters 看列表。"
+                d = _dt.fromtimestamp(r["at"])
+                tag = f"{name}的信" if r["direction"] == "in" else \
+                    f"{who.get(r['author'], r['author'])}寄出"
+                return f"#{r['id']} · {d.month}-{d.day:02d} · {tag}\n{r['body']}"
+            page = 1
+            if cmd == "letters" and len(parts) == 2 and parts[0] == "page" \
+                    and parts[1].isdigit():
+                page = max(1, int(parts[1]))
+            per = 6
+            box = mailbox_summary(conn, cid, now=t, limit=per,
+                                  offset=(page - 1) * per)
+            if box["last_in_days"] is None:
+                line = texts.AWAY_NO_LETTER_YET
+            elif box["last_in_days"] == 0:
+                line = texts.AWAY_LAST_LETTER_TODAY
+            else:
+                line = texts.AWAY_LAST_LETTER.format(days=box["last_in_days"])
+            if box["unread"]:
+                line += f" 没拆的信:{box['unread']} 封。"
+            lines = [texts.AWAY_STATUS_HEAD.format(name=name), line]
+            if cmd == "letters":
+                for r in box["letters"]:
+                    d = _dt.fromtimestamp(r["at"])
+                    tag = f"{name}的信" if r["direction"] == "in" else \
+                        f"{who.get(r['author'], r['author'])}寄出"
+                    mark = "●" if not r["read"] else "·"
+                    head = r["body"][:24] + ("…" if len(r["body"]) > 24 else "")
+                    lines.append(f"{mark} #{r['id']} {d.month}-{d.day:02d}"
+                                 f" {tag}:{head}")
+                if not box["letters"]:
+                    lines.append("(这一页没有信。)" if page > 1
+                                 else "(信箱还空着。)")
+                if box["total"] > page * per:
+                    lines.append(f"(还有更早的——letters page {page + 1})")
+            return "\n".join(lines)
+        elif cmd == "write":
+            if not rest:
+                return "write 后面接信的内容。他不会马上回——他有自己的日子了。"
+            r = write_letter(conn, cid, PLAYER_DIR[persona], rest, now=t)
+            if not r["ok"]:
+                return {"empty": "信是空的。",
+                        "too_long": f"太长了(>{cfg.MAX_LETTER_LEN} 字)。"
+                                    "信不用一次写完,想说的下封再说。"
+                        }.get(r["error"], r["error"])
+            return texts.LETTER_SENT_REPLY
         else:
-            return texts.GRADUATED_QUIET.format(name=name)
+            return texts.AWAY_QUIET
 
     if cmd == "help":
         cmds = sorted(allowed - {"help"})
@@ -272,6 +392,10 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
 
     if cmd == "name":
         return _name_dispatch(conn, child, rest, t)
+
+    if cmd in ("write", "letters"):
+        # 指令存在,只是还没到时候(信箱是离家后的事;口径与 mama not_away 对齐)
+        return texts.NOT_AWAY_HINT.format(name=name)
 
     if cmd not in STAGE_ACTIONS["toddler"] | STAGE_ACTIONS["child"] | \
             STAGE_ACTIONS["teen"] | STAGE_ACTIONS["infant"] | STAGE_ACTIONS["adult"]:
@@ -378,23 +502,18 @@ def dispatch(conn, persona: str, argv: list, now: float | None = None) -> str:
         return f"{verb}。\n{_speak_line(res, name)}\n{_render_state(conn, cid, t)}"
 
     if cmd in ("farewell", "stay"):
-        # 结局日:告别门开着才有意义,但指令本身幂等安全——
-        # farewell 落账后由 judge_ending(下一拍或就地)判结局;stay=再陪一天,
-        # 当天他只说那一句(child_speak 路)。
-        gate = conn.execute(
-            "SELECT 1 FROM growth_album WHERE child_id=? AND item_kind="
-            "'farewell_gate' LIMIT 1", (cid,)).fetchone()
-        if gate is None:
-            return f"{name}还没到要说再见的时候。"
+        # v0.4 新语义:告别窗开着(他自己提出「我想出去住了」)才有意义。
+        # farewell=「我知道了。去吧。」落账后就地判结局;stay=「今天先别走」,
+        # 他答应「那就明天」——可多次用,不延总窗(窗满他自己开口,tick 侧)。
+        from .events import farewell_window, judge_ending
+        if farewell_window(conn, cid) is None:
+            return f"{name}还没提要走的事。"
         child_mod.apply_action(conn, cid, PLAYER_DIR[persona], cmd,
                                idempotency_key=_idem(cmd, t), now=t)
         if cmd == "stay":
-            # 台词走 child_speak 留痕(评审定案:界面词与 utterance 同源)
-            res = child_mod.child_speak(conn, brain, cid, trigger="stay", now=t)
-            return f"{texts.FAREWELL_STAY_REPLY}\n「{res.text}」"
-        from .events import judge_ending
+            return texts.FAREWELL_STAY_REPLY
         ending = judge_ending(conn, brain, cid, now=t)
-        tail = f"(结局:{ending})" if ending else ""
+        tail = f"\n(结局:{texts.ENDING_CN.get(ending, ending)})" if ending else ""
         return f"{texts.FAREWELL_GO_REPLY}{tail}"
 
     if cmd == "choose":

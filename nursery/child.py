@@ -760,32 +760,13 @@ def child_speak(conn: sqlite3.Connection, brain: ChildBrain, child_id: str, *,
             if child["status"] == "runaway":
                 raise ValueError("runaway")  # 推理端离线,driver 渲染"打不通"
             if child["status"] == "graduated":
-                raise ValueError("graduated")  # 已毕业,摇篮房不再出声
+                # v0.4:毕业后只有他回来探望那天才出声(visit 窗内 talk/say 放行)
+                from .letters import in_visit
+                if not in_visit(conn, child_id, now=t):
+                    raise ValueError("graduated")
             stage = stage_of(child, t)
-            # 结局日:「再等一天」窗内他一整天只说那一句。
-            # 定稿句直出:不走生成不耗 rng(rng_state 不动),utterance 照留痕。
-            # 窗带上界:未来时间戳的脏行/时钟回拨不把现在拖进定稿句模式。
-            if stage == "adult":
-                stay = conn.execute(
-                    "SELECT 1 FROM action_log WHERE child_id=? AND kind='stay'"
-                    " AND effective_at>? AND effective_at<=? LIMIT 1",
-                    (child_id, t - cfg.STAY_LINE_HOURS * 3600, t)).fetchone()
-                if stay is not None:
-                    from .texts import STAY_LINE
-                    res = SpeakResult(text=STAY_LINE, retries=0, max_overlap=0,
-                                      accepted=True, stage=stage,
-                                      params={"stay_day": True})
-                    # model_snapshot_id=NULL:这句是定稿不是模型输出——
-                    # 「utterance 恒指真实模型」纪律靠不冒充满足(直出在
-                    # catch-up 前,挂旧 snapshot_id 会指错模型)。
-                    conn.execute(
-                        "INSERT INTO utterance(child_id, trigger,"
-                        " model_snapshot_id, stage, text, generation_params_json,"
-                        " max_source_overlap, accepted, rejection_reason,"
-                        " created_at) VALUES(?,?,NULL,?,?,?,?,1,NULL,?)",
-                        (child_id, trigger, stage, res.text,
-                         json.dumps(res.params), 0, t))
-                    return res  # tx 上下文正常退出即提交
+            # (v0.3 stay 定稿句直出路已随 v0.4 退役:stay 新语义=他答应
+            # 「那就明天」,窗内说话照常走模型——他还在家,只是要走了。)
             brain._replay_after_cursor(conn)
             if brain.snapshot_id is None or brain.trained_through != brain.snapshot_cursor:
                 # 当前模型游标 ≠ 快照游标(catch-up 或 load 走了旧快照+重放):

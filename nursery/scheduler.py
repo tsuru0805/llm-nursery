@@ -262,21 +262,60 @@ def tick_one(db_path: str, viewer: str, now: float | None = None) -> dict:
         try:
             conn = pdb.connect(db_path)
             try:
+                # ORDER BY 钉先出生者(与 driver._active_child 同式;单库多孩
+                # 仍是设计缺口:先出生的恒被选中——多孩支持=后续版本)
                 row = conn.execute(
-                    "SELECT child_id FROM child WHERE status IN ('active','runaway')"
-                    " LIMIT 1").fetchone()
+                    "SELECT child_id, status FROM child WHERE status IN"
+                    " ('active','runaway','graduated')"
+                    " ORDER BY created_at LIMIT 1").fetchone()
                 if row is None:
                     return {"skipped": "no_active_child"}
                 cid = row["child_id"]
+                if row["status"] == "graduated":
+                    # v0.4 书信阶段:幼年机制全停,只剩信箱(排信/探望/生成/投递)。
+                    # 信体生成(LLM 网络 ≤20s)留在主 flock 内——毕业后指令面只剩
+                    # 低频信箱,库上并发≈0;若未来加高频指令要先挪锁外。
+                    from .letters import deliver_due_letters, tick_letters_fast
+                    lout = {"letters": tick_letters_fast(conn, cid, now=t)}
+                    try:
+                        lbrain = child_mod.ChildBrain.load(conn, cid)
+                    except Exception:
+                        lbrain = None   # 画像快照缺 brain=degraded 照出,信照写
+                    # 毕业瞬间还开着的 ask/choice 窗结清,不留永久悬账(幂等)
+                    try:
+                        from .asks import settle_asks
+                        from .choices import settle_choices
+                        settle_asks(conn, cid, now=t)
+                        if lbrain is not None:
+                            settle_choices(conn, lbrain, cid, now=t)
+                    except Exception:
+                        pass
+                    try:
+                        n = deliver_due_letters(conn, lbrain, cid, now=t)
+                        if n:
+                            lout["letters"]["delivered"] = n
+                    except Exception:
+                        pass   # 生成层任何故障不炸 tick;信在 scheduled 顺延
+                    lout["outbox"] = deliver_outbox(conn, now=t)
+                    return lout
                 brain = child_mod.ChildBrain.load(conn, cid)
                 scheduled = schedule_night_feed(conn, cid, now=t)
                 fired = fire_due_events(conn, brain, cid, now=t)
+                # tick_events(里程碑/阶段/毕业过渡弧/每日/惊喜/出走/结局)先跑:
+                # 开窗动作在弧里——闸要在它之后算,「我想出去住了」那一拍就不再
+                # 排新任务(否则同拍还能开一个横穿告别窗的病窗)
+                from .events import in_departure_window, tick_events
+                evs = tick_events(conn, brain, cid, now=t)
+                # v0.4 告别窗=纯缓冲期:不排新的 asks/choices/chains/魔法/生病
+                # (存量已排的照 fire、settle 照记账——静默的是"新任务")
+                win_quiet = in_departure_window(conn, cid, now=t)
                 # ask/选择题/事件链:三件各自自守闸(fail-open)——任何一件
                 # 坏了绝不拦后面的偷学/events/outbox 投递(与 friction/growth
                 # 同哲学;各机制内部全幂等,空结果=本拍照旧)
                 try:
                     from .asks import fire_due_asks, plan_asks, settle_asks
-                    asks = {"planned": plan_asks(conn, cid, now=t),
+                    asks = {"planned": 0 if win_quiet
+                            else plan_asks(conn, cid, now=t),
                             "fired": len(fire_due_asks(conn, brain, cid, now=t))}
                     asks.update(settle_asks(conn, cid, now=t))
                 except Exception:
@@ -284,7 +323,8 @@ def tick_one(db_path: str, viewer: str, now: float | None = None) -> dict:
                 try:
                     from .choices import (fire_due_choices, plan_choices,
                                           settle_choices)
-                    choices = {"planned": plan_choices(conn, cid, now=t),
+                    choices = {"planned": 0 if win_quiet
+                               else plan_choices(conn, cid, now=t),
                                "fired": len(fire_due_choices(conn, brain, cid,
                                                              now=t))}
                     choices.update(settle_choices(conn, brain, cid, now=t))
@@ -292,7 +332,8 @@ def tick_one(db_path: str, viewer: str, now: float | None = None) -> dict:
                     choices = {}
                 try:
                     from .chains import fire_due_chain_eps, plan_chains
-                    chains = {"planned": plan_chains(conn, cid, now=t),
+                    chains = {"planned": 0 if win_quiet
+                              else plan_chains(conn, cid, now=t),
                               "fired": len(fire_due_chain_eps(conn, brain, cid,
                                                               now=t))}
                 except Exception:
@@ -323,18 +364,18 @@ def tick_one(db_path: str, viewer: str, now: float | None = None) -> dict:
                     grw = tick_growth(conn, cid, now=t)
                 except Exception:
                     grw = {}
-                from .events import tick_events
-                evs = tick_events(conn, brain, cid, now=t)
                 # 语料魔法+生病 arc:低频/幂等/fail-open,
                 # 任何一件坏了绝不炸 tick(送礼藏品卡挂每日事件里,随 tick_events 走)
                 try:
                     from .magic import tick_magic
-                    magic = tick_magic(conn, brain, cid, now=t)
+                    magic = None if win_quiet else tick_magic(conn, brain, cid,
+                                                              now=t)
                 except Exception:
                     magic = None
                 try:
                     from .sickness import tick_sickness
-                    sickness = tick_sickness(conn, brain, cid, now=t)
+                    sickness = None if win_quiet else tick_sickness(
+                        conn, brain, cid, now=t)
                 except Exception:
                     sickness = None
                 posted = deliver_outbox(conn, now=t)
