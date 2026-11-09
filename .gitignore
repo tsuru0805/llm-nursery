@@ -8,3 +8,4 @@ saves/
 *.db-wal
 *.db-shm
 .env
+.claude/settings.local.json
